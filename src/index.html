@@ -36,8 +36,8 @@
     }
 
     .drag-bar {
-      height: 38px;
-      background: rgba(15, 23, 42, 0.6);
+      height: 42px;
+      background: rgba(15, 23, 42, 0.7);
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
@@ -63,13 +63,18 @@
     .traffic-light.maximize { background: #27c93f; opacity: 0.5; }
     
     .brand-title {
-      font-size: 0.85rem;
-      font-weight: 600;
-      color: var(--text-secondary);
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--text-primary);
       letter-spacing: 0.5px;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
+    }
+    .brand-logo-img {
+      width: 20px;
+      height: 20px;
+      object-fit: contain;
     }
     .ver-tag {
       font-size: 0.7rem;
@@ -77,6 +82,7 @@
       color: #a5b4fc;
       padding: 2px 6px;
       border-radius: 6px;
+      font-weight: 500;
     }
 
     .app-content {
@@ -226,8 +232,8 @@
       overflow-wrap: anywhere;
       color: #4ade80;
     }
-    .copy-btn {
-      padding: 4px 8px;
+    .action-btn {
+      padding: 3px 8px;
       font-size: 0.72rem;
       border-radius: 6px;
       background: rgba(255, 255, 255, 0.1);
@@ -238,6 +244,29 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
+    }
+
+    .qr-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 2000;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      backdrop-filter: blur(8px);
+    }
+    .qr-modal.open { display: flex; }
+    .qr-card {
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      text-align: center;
+      max-width: 320px;
+      width: 100%;
     }
 
     .icon-svg {
@@ -263,7 +292,7 @@
       opacity: 0;
       transition: 0.3s;
       pointer-events: none;
-      z-index: 1000;
+      z-index: 3000;
     }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   </style>
@@ -277,6 +306,7 @@
       <button class="traffic-light maximize" title="Maximize"></button>
     </div>
     <div class="brand-title">
+      <img src="assets/logo.png" class="brand-logo-img" alt="Logo">
       Undetect <span id="verTag" class="ver-tag">v1.0.0</span>
     </div>
     <div style="-webkit-app-region: no-drag;">
@@ -288,7 +318,7 @@
   </div>
 
   <div class="app-content">
-    <!-- Auto-Update Notification Banner -->
+    <!-- Auto-Update Banner -->
     <div id="updateBanner" class="update-banner">
       <div style="font-size: 0.83rem;">
         <b>New Release Available: <span id="updateVerText">v1.0.1</span></b>
@@ -300,7 +330,7 @@
       </button>
     </div>
 
-    <!-- Server Configuration Surface -->
+    <!-- Server Config Surface -->
     <div class="surface">
       <div class="surface-header">
         <span>Server Configuration</span>
@@ -338,7 +368,7 @@
       </div>
     </div>
 
-    <!-- Local Network Access Surface -->
+    <!-- Local Wi-Fi Network Access Surface -->
     <div class="surface">
       <div class="surface-header">Local Wi-Fi Access URLs</div>
       <div id="urlsList" style="display:flex; flex-direction:column; gap:6px;"></div>
@@ -357,6 +387,16 @@
         <svg class="icon-svg" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         Clear (<span id="shotCount">0</span>)
       </button>
+    </div>
+  </div>
+
+  <!-- QR Code Modal -->
+  <div id="qrModal" class="qr-modal" onclick="closeQrModal()">
+    <div class="qr-card" onclick="event.stopPropagation()">
+      <h3 style="font-size:1.1rem; margin-bottom:6px;">Scan with Phone</h3>
+      <p style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:16px;">Scan QR code with your mobile camera to open viewer instantly</p>
+      <img id="qrImage" src="" alt="QR Code" style="width:180px; height:180px; margin:0 auto 16px; display:block; border-radius:8px;">
+      <button class="btn btn-secondary" style="width:100%;" onclick="closeQrModal()">Close</button>
     </div>
   </div>
 

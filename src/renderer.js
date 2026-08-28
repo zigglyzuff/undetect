@@ -14,6 +14,20 @@ function copyText(text) {
   showToast('URL Copied to Clipboard!');
 }
 
+async function showQrModal(url) {
+  const res = await ipcRenderer.invoke('generate-qr', url);
+  if (res.success && res.qrDataUrl) {
+    document.getElementById('qrImage').src = res.qrDataUrl;
+    document.getElementById('qrModal').classList.add('open');
+  } else {
+    showToast('Failed to generate QR Code');
+  }
+}
+
+function closeQrModal() {
+  document.getElementById('qrModal').classList.remove('open');
+}
+
 async function refreshStatus() {
   try {
     const status = await ipcRenderer.invoke('get-status');
@@ -38,10 +52,15 @@ async function refreshStatus() {
     const urlsList = document.getElementById('urlsList');
     if (status.localUrls && status.localUrls.length > 0) {
       const copyIcon = '<svg class="icon-svg" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+      const qrIcon = '<svg class="icon-svg" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>';
+      
       urlsList.innerHTML = status.localUrls.map(url => `
         <div class="url-item">
           <span class="url-text">${url}</span>
-          <button class="copy-btn" onclick="copyText('${url}')">${copyIcon} Copy</button>
+          <div style="display:flex; gap:4px;">
+            <button class="action-btn" onclick="showQrModal('${url}')">${qrIcon} QR</button>
+            <button class="action-btn" onclick="copyText('${url}')">${copyIcon} Copy</button>
+          </div>
         </div>
       `).join('');
     } else {

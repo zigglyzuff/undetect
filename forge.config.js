@@ -1,8 +1,19 @@
+const path = require('path');
+
 module.exports = {
   packagerConfig: {
     name: 'Undetect',
     executableName: 'Undetect',
     asar: true,
+    icon: path.join(__dirname, 'src/assets/logo'),
+    ignore: [
+      /^\/\.git/,
+      /^\/out/,
+      /^\/\.vscode/,
+      /^\/scratch/,
+      /\.md$/,
+      /\.log$/,
+    ],
   },
   rebuildConfig: {},
   makers: [

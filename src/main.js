@@ -7,6 +7,8 @@ const path = require('path');
 const https = require('https');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const QRCode = require('qrcode');
+const { updateElectronApp } = require('update-electron-app');
 const server = require('./server');
 
 let mainWindow = null;
@@ -14,14 +16,25 @@ let skipTaskbarState = false;
 let contentProtectedState = true;
 const GITHUB_REPO_SLUG = 'zigglyzuff/undetect';
 
+// Standardized Electron Auto-Updater from GitHub Releases
+try {
+  updateElectronApp({
+    repo: GITHUB_REPO_SLUG,
+    updateInterval: '5 minutes',
+  });
+} catch (e) {
+  console.log('[UndetectMain] update-electron-app setup note:', e.message);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 460,
-    height: 620,
+    height: 680,
     resizable: false,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
+    icon: path.join(__dirname, 'assets/logo.png'),
     title: 'Undetect Screen Server',
     webPreferences: {
       nodeIntegration: true,
@@ -200,6 +213,20 @@ ipcMain.handle('get-status', () => {
     appVersion: app.getVersion(),
     gitHubRepo: GITHUB_REPO_SLUG,
   };
+});
+
+ipcMain.handle('generate-qr', async (event, url) => {
+  try {
+    if (!url) return { success: false };
+    const qrDataUrl = await QRCode.toDataURL(url, {
+      margin: 1,
+      width: 180,
+      color: { dark: '#ffffff', light: '#00000000' },
+    });
+    return { success: true, qrDataUrl };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 });
 
 ipcMain.handle('capture-now', async () => {
