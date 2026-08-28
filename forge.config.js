@@ -5,7 +5,7 @@ module.exports = {
     name: 'Undetect',
     executableName: 'Undetect',
     asar: true,
-    icon: path.join(__dirname, 'src/assets/logo'),
+    icon: path.join(__dirname, 'src/assets/icon.ico'),
     ignore: [
       /^\/\.git/,
       /^\/out/,
@@ -23,6 +23,7 @@ module.exports = {
         name: 'undetect',
         productName: 'Undetect',
         shortcutName: 'Undetect',
+        setupIcon: path.join(__dirname, 'src/assets/icon.ico'),
         createDesktopShortcut: true,
         createStartMenuShortcut: true,
       },

@@ -34,7 +34,7 @@ function createWindow() {
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
-    icon: path.join(__dirname, 'assets/logo.png'),
+    icon: path.join(__dirname, 'assets/icon.ico'),
     title: 'Undetect Screen Server',
     webPreferences: {
       nodeIntegration: true,
