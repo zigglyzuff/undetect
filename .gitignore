@@ -1,4 +1,8 @@
 node_modules/
 out/
+dist/
+src-tauri/target/
+.cargo/
+electron_legacy_backup/
 .DS_Store
 *.log
