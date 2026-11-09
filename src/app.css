@@ -1,0 +1,56 @@
+@import "tailwindcss";
+@source "../node_modules/flowbite-svelte";
+@source "../node_modules/flowbite-svelte-icons";
+
+:root {
+  --bg-base: #090a0f;
+  --bg-surface: rgba(255, 255, 255, 0.03);
+  --bg-elevated: rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.08);
+  --accent: #ffffff;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: #090a0f;
+  color: #f4f4f5;
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  user-select: none;
+}
+
+#viewer-app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Subtle, sleek monochrome scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+* {
+  box-sizing: border-box;
+}

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en" class="dark h-full w-full overflow-hidden m-0 p-0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Undetect • Remote Screen Viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        overscroll-behavior: none;
+        background-color: #090a0f;
+      }
+      #viewer-app {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body class="bg-[#090a0f] text-zinc-100 h-full w-full overflow-hidden m-0 p-0 selection:bg-zinc-700 selection:text-white select-none">
+    <div id="viewer-app"></div>
+    <script type="module" src="/src/viewer/main.js"></script>
+  </body>
+</html>
