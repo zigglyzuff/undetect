@@ -7,3 +7,4 @@ electron_legacy_backup/
 release_build/
 .DS_Store
 *.log
+reset-undetect.bat

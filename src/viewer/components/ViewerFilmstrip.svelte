@@ -25,7 +25,7 @@
   }
 </script>
 
-<div class="w-full bg-zinc-950 border-t border-white/10 flex flex-col select-none shrink-0 backdrop-blur-xl">
+<div class="w-full bg-zinc-950 border-t border-zinc-800 flex flex-col select-none shrink-0 backdrop-blur-xl">
   <!-- Horizontal Reel Row with Edge Fades (No Arrows Needed) -->
   <div class="w-full px-2 pt-2 pb-1 relative overflow-hidden flex items-center">
     <!-- Left Edge Fade Effect -->
@@ -76,7 +76,7 @@
                   #{idx + 1}
                 </span>
                 {#if isActive}
-                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span class="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>
                 {/if}
               </div>
               <span class="text-[10px] font-mono mt-0.5 whitespace-nowrap {isActive ? 'font-semibold text-white' : 'text-zinc-400'}">
@@ -98,7 +98,7 @@
         type="button"
         onclick={onClear}
         disabled={screenshots.length === 0}
-        class="w-10 h-10 rounded-full bg-zinc-900 border border-zinc-800 hover:border-rose-900/60 text-zinc-400 hover:text-rose-400 hover:bg-rose-950/30 disabled:opacity-20 disabled:pointer-events-none flex items-center justify-center transition-all cursor-pointer shadow-sm active:scale-95"
+        class="w-10 h-10 rounded-full bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-20 disabled:pointer-events-none flex items-center justify-center transition-all cursor-pointer shadow-sm active:scale-95"
         title="Clear session history"
         aria-label="Clear session history"
       >
@@ -134,7 +134,7 @@
       </div>
     </button>
 
-    <!-- Right Control: Download Current (Closer to the right thumb) -->
+    <!-- Right Control: Download Current (Thumb Reach) -->
     <div class="flex items-center gap-2 justify-end">
       <button
         type="button"

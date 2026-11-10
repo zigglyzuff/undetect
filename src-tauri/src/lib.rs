@@ -1,6 +1,10 @@
 mod capture;
+pub mod llm;
+mod ocr;
 mod server;
 mod state;
+pub mod telemetry;
+pub mod voice;
 mod win_util;
 
 use base64::Engine;
@@ -8,12 +12,13 @@ use qrcode::QrCode;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tokio::runtime::Runtime;
 
 use crate::capture::capture_primary_screen;
 use crate::state::{AppState, ScreenshotMeta};
+use crate::telemetry::TelemetryService;
 
 pub fn tokio_rt() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
@@ -34,6 +39,10 @@ pub struct StatusResponse {
     pub screenshot_count: usize,
     pub skip_taskbar: bool,
     pub content_protected: bool,
+    pub always_on_top: bool,
+    pub click_through: bool,
+    pub window_opacity: u8,
+    pub telemetry_enabled: bool,
     pub app_version: String,
 }
 
@@ -52,8 +61,10 @@ fn get_local_urls(port: u16, pass: &str) -> Vec<String> {
 
     if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
         for (_name, ip) in interfaces {
-            if ip.is_ipv4() && !ip.is_loopback() {
-                let u = format!("http://{}:{}/{}", ip, port, pass_param);
+            if let std::net::IpAddr::V4(v4) = ip
+                && !v4.is_loopback() && !v4.is_link_local()
+            {
+                let u = format!("http://{}:{}/{}", v4, port, pass_param);
                 if !urls.contains(&u) {
                     urls.push(u);
                 }
@@ -84,6 +95,10 @@ fn build_status(state: &AppState, app_version: &str) -> StatusResponse {
         screenshot_count: count,
         skip_taskbar: state.skip_taskbar.load(Ordering::Relaxed),
         content_protected: state.content_protected.load(Ordering::Relaxed),
+        always_on_top: state.always_on_top.load(Ordering::Relaxed),
+        click_through: state.click_through.load(Ordering::Relaxed),
+        window_opacity: state.window_opacity.load(Ordering::Relaxed),
+        telemetry_enabled: state.telemetry.is_enabled(),
         app_version: app_version.to_string(),
     }
 }
@@ -112,9 +127,12 @@ async fn start_server(
         }
     }
 
+    let normalized_port = if port == 0 { 9090 } else { port };
+    state::save_server_config_to(&state::server_config_path(), normalized_port, &password)?;
+
     {
         let mut cfg = state.config.write().unwrap();
-        cfg.port = port;
+        cfg.port = normalized_port;
         cfg.password = password;
     }
 
@@ -126,14 +144,18 @@ async fn start_server(
 
     let state_clone = Arc::clone(&state);
     tokio_rt().spawn(async move {
-        server::start_http_server(state_clone, port, shutdown_rx).await;
+        server::start_http_server(state_clone, normalized_port, shutdown_rx).await;
     });
 
     // Small delay for listener to bind
     std::thread::sleep(std::time::Duration::from_millis(150));
 
     let ver = app.package_info().version.to_string();
-    Ok(build_status(&state, &ver))
+    let status = build_status(&state, &ver);
+    if status.running {
+        TelemetryService::spawn_capture(&state, "remote_server_started", None);
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -190,6 +212,55 @@ async fn toggle_content_protection(
     win_util::set_content_protection(&window, protect)?;
     state.content_protected.store(protect, Ordering::Relaxed);
     Ok(protect)
+}
+
+#[tauri::command]
+async fn toggle_always_on_top(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    always_on_top: bool,
+) -> Result<bool, String> {
+    window
+        .set_always_on_top(always_on_top)
+        .map_err(|e| format!("Failed to set always on top: {}", e))?;
+    state.always_on_top.store(always_on_top, Ordering::Relaxed);
+    Ok(always_on_top)
+}
+
+#[tauri::command]
+async fn toggle_telemetry(
+    state: tauri::State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let applied = state.telemetry.set_enabled(enabled)?;
+    if applied {
+        TelemetryService::spawn_capture(&state, "app_heartbeat", None);
+    }
+    Ok(applied)
+}
+
+#[tauri::command]
+async fn toggle_click_through(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    click_through: bool,
+) -> Result<bool, String> {
+    window
+        .set_ignore_cursor_events(click_through)
+        .map_err(|e| format!("Failed to update click-through mode: {e}"))?;
+    state.click_through.store(click_through, Ordering::Relaxed);
+    Ok(click_through)
+}
+
+#[tauri::command]
+async fn set_window_opacity(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    opacity: u8,
+) -> Result<u8, String> {
+    let clamped = win_util::set_window_opacity(&window, opacity)?;
+    state.window_opacity.store(clamped, Ordering::Relaxed);
+    Ok(clamped)
 }
 
 #[tauri::command]
@@ -292,9 +363,377 @@ fn drag_window(window: WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_window_size(window: WebviewWindow) -> Result<win_util::WindowSizeDto, String> {
+    win_util::get_window_logical_size(&window)
+}
+
+#[tauri::command]
+fn set_window_size(
+    window: WebviewWindow,
+    width: f64,
+    height: f64,
+) -> Result<win_util::WindowSizeDto, String> {
+    win_util::set_window_logical_size(&window, width, height)
+}
+
+#[tauri::command]
+fn step_resize_window(
+    window: WebviewWindow,
+    dw: f64,
+    dh: f64,
+) -> Result<win_util::WindowSizeDto, String> {
+    win_util::step_resize_window(&window, dw, dh)
+}
+
+#[tauri::command]
+fn reset_window_size(window: WebviewWindow) -> Result<win_util::WindowSizeDto, String> {
+    win_util::reset_window_bounds(&window)
+}
+
+#[tauri::command]
+fn nudge_window(window: WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
+    win_util::nudge_window_position(&window, dx, dy)
+}
+
+#[tauri::command]
+fn toggle_window_visibility(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<bool, String> {
+    win_util::toggle_window_visibility(&window, state.always_on_top.load(Ordering::Relaxed))
+}
+
+#[tauri::command]
+fn start_resize_drag(window: WebviewWindow, direction: String) -> Result<(), String> {
+    win_util::start_resize_drag(&window, &direction)
+}
+
+fn track_chat_sent(state: &Arc<AppState>, res: &crate::llm::ChatResponse, had_screenshot: bool) {
+    TelemetryService::spawn_capture(
+        state,
+        "chat_message_sent",
+        Some(serde_json::json!({
+            "provider": res.provider,
+            "model": res.model,
+            "with_screen": had_screenshot,
+        })),
+    );
+}
+
+#[tauri::command]
+async fn send_llm_chat(
+    state: tauri::State<'_, Arc<AppState>>,
+    request: crate::llm::ChatRequest,
+) -> Result<crate::llm::ChatResponse, String> {
+    let had_screenshot = request.screenshot_id.is_some();
+    let res = state.llm.execute_chat(request, (*state).clone()).await?;
+    track_chat_sent(&state, &res, had_screenshot);
+    Ok(res)
+}
+
+#[tauri::command]
+async fn send_llm_chat_stream(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    request: crate::llm::ChatRequest,
+    stream_id: String,
+) -> Result<crate::llm::ChatResponse, String> {
+    let had_screenshot = request.screenshot_id.is_some();
+    let res = state
+        .llm
+        .execute_chat_stream(request, (*state).clone(), stream_id, app)
+        .await?;
+    track_chat_sent(&state, &res, had_screenshot);
+    Ok(res)
+}
+
+#[tauri::command]
+fn get_llm_config(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::llm::PublicLlmConfig, String> {
+    Ok(state.llm.get_public_config())
+}
+
+#[tauri::command]
+fn set_llm_config(
+    state: tauri::State<'_, Arc<AppState>>,
+    config: crate::llm::LlmConfig,
+) -> Result<crate::llm::PublicLlmConfig, String> {
+    state.llm.apply_config_update(config)
+}
+
+#[tauri::command]
+fn clear_llm_api_key(
+    state: tauri::State<'_, Arc<AppState>>,
+    provider: String,
+) -> Result<crate::llm::PublicLlmConfig, String> {
+    state.llm.clear_api_key(&provider)
+}
+
+#[tauri::command]
+fn upload_resume(
+    state: tauri::State<'_, Arc<AppState>>,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<crate::llm::PublicLlmConfig, String> {
+    state.llm.upload_resume(&filename, &bytes)
+}
+
+#[tauri::command]
+fn clear_resume(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::llm::PublicLlmConfig, String> {
+    state.llm.clear_resume()
+}
+
+#[tauri::command]
+fn set_job_description(
+    state: tauri::State<'_, Arc<AppState>>,
+    job_description: String,
+) -> Result<crate::llm::PublicLlmConfig, String> {
+    state.llm.set_job_description(&job_description)
+}
+
+#[tauri::command]
+fn run_ocr(
+    state: tauri::State<'_, Arc<AppState>>,
+    screenshot_id: Option<String>,
+) -> Result<crate::llm::OcrResponse, String> {
+    match state.llm.extract_ocr_from_state(screenshot_id.as_deref(), &state) {
+        Ok(text) => Ok(crate::llm::OcrResponse {
+            success: true,
+            text,
+            error: None,
+        }),
+        Err(e) => Ok(crate::llm::OcrResponse {
+            success: false,
+            text: "".to_string(),
+            error: Some(e),
+        }),
+    }
+}
+
+#[tauri::command]
+async fn get_groq_models(
+    state: tauri::State<'_, Arc<AppState>>,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
+    state.llm.fetch_groq_models(api_key.as_deref()).await
+}
+
+#[tauri::command]
+fn get_voice_status(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::voice::VoiceStatus, String> {
+    Ok(state.voice.get_status())
+}
+
+#[tauri::command]
+fn set_voice_config(
+    state: tauri::State<'_, Arc<AppState>>,
+    config: crate::voice::VoiceConfig,
+) -> Result<crate::voice::VoiceStatus, String> {
+    state.voice.update_config(config)
+}
+
+#[tauri::command]
+fn set_voice_source(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    source: String,
+) -> Result<crate::voice::VoiceStatus, String> {
+    state.voice.set_source(&app, &source)
+}
+
+#[tauri::command]
+fn clear_voice_api_key(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::voice::VoiceStatus, String> {
+    state.voice.stop_listening(&app);
+    state.voice.clear_deepgram_key()
+}
+
+#[tauri::command]
+fn list_voice_devices() -> Result<Vec<crate::voice::AudioDeviceDto>, String> {
+    crate::voice::list_audio_devices()
+}
+
+#[tauri::command]
+async fn setup_vosk(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::voice::VoiceStatus, String> {
+    state.voice.setup_vosk(&app).await
+}
+
+fn track_voice_start(state: &Arc<AppState>, status: &crate::voice::VoiceStatus) {
+    if status.listening {
+        TelemetryService::spawn_capture(
+            state,
+            "voice_listening_started",
+            Some(serde_json::json!({
+                "provider": status.provider,
+                "source": status.source,
+            })),
+        );
+    }
+}
+
+#[tauri::command]
+fn start_voice_input(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::voice::VoiceStatus, String> {
+    let status = state.voice.start_listening(&app)?;
+    track_voice_start(&state, &status);
+    Ok(status)
+}
+
+#[tauri::command]
+fn stop_voice_input(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::voice::VoiceStatus, String> {
+    Ok(state.voice.stop_listening(&app))
+}
+
+#[tauri::command]
+fn toggle_voice_input(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::voice::VoiceStatus, String> {
+    let status = state.voice.toggle_listening(&app)?;
+    track_voice_start(&state, &status);
+    Ok(status)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlobalAction {
+    ToggleVisibility,
+    FocusChatInput,
+    AnswerScreen,
+    ScrollChatUp,
+    ScrollChatDown,
+    WidthShrink,
+    WidthGrow,
+    ToggleScreenAttachment,
+    ToggleVoiceInput,
+    ToggleProtection,
+    ToggleClickThrough,
+    ResizeReset,
+}
+
+// Chosen to avoid Windows/Intel display-rotation (`Ctrl+Alt+Arrow`) and OS shell defaults.
+const GLOBAL_SHORTCUTS: &[(&str, GlobalAction)] = &[
+    ("ctrl+alt+h", GlobalAction::ToggleVisibility),
+    ("ctrl+alt+k", GlobalAction::FocusChatInput),
+    ("ctrl+alt+enter", GlobalAction::AnswerScreen),
+    ("ctrl+alt+shift+up", GlobalAction::ScrollChatUp),
+    ("ctrl+alt+shift+down", GlobalAction::ScrollChatDown),
+    ("ctrl+alt+shift+left", GlobalAction::WidthShrink),
+    ("ctrl+alt+shift+right", GlobalAction::WidthGrow),
+    ("ctrl+alt+a", GlobalAction::ToggleScreenAttachment),
+    ("ctrl+alt+v", GlobalAction::ToggleVoiceInput),
+    ("ctrl+alt+p", GlobalAction::ToggleProtection),
+    ("ctrl+alt+g", GlobalAction::ToggleClickThrough),
+    ("ctrl+alt+0", GlobalAction::ResizeReset),
+];
+
+fn parse_global_shortcuts() -> Vec<(Shortcut, GlobalAction, &'static str)> {
+    GLOBAL_SHORTCUTS
+        .iter()
+        .filter_map(|&(spec, action)| match spec.parse::<Shortcut>() {
+            Ok(sc) => Some((sc, action, spec)),
+            Err(err) => {
+                eprintln!("[Undetect] Failed to parse shortcut {}: {:?}", spec, err);
+                None
+            }
+        })
+        .collect()
+}
+
+fn dispatch_global_action(app: &AppHandle, state: &Arc<AppState>, action: GlobalAction) {
+    let Some(main_window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    match action {
+        GlobalAction::ToggleVisibility => {
+            let on_top = state.always_on_top.load(Ordering::Relaxed);
+            if let Ok(visible) = win_util::toggle_window_visibility(&main_window, on_top) {
+                let _ = app.emit("shortcut://visibility", visible);
+            }
+        }
+        GlobalAction::FocusChatInput => {
+            let on_top = state.always_on_top.load(Ordering::Relaxed);
+            if win_util::focus_window(&main_window, on_top).is_ok() {
+                let _ = app.emit("shortcut://focus-chat", true);
+            }
+        }
+        GlobalAction::AnswerScreen => {
+            let _ = app.emit("shortcut://answer-screen", true);
+        }
+        GlobalAction::ScrollChatUp => {
+            let _ = app.emit("shortcut://scroll", -160i32);
+        }
+        GlobalAction::ScrollChatDown => {
+            let _ = app.emit("shortcut://scroll", 160i32);
+        }
+        GlobalAction::WidthShrink => {
+            if let Ok(size) = win_util::step_resize_window(&main_window, -60.0, 0.0) {
+                let _ = app.emit("shortcut://resized", size);
+            }
+        }
+        GlobalAction::WidthGrow => {
+            if let Ok(size) = win_util::step_resize_window(&main_window, 60.0, 0.0) {
+                let _ = app.emit("shortcut://resized", size);
+            }
+        }
+        GlobalAction::ToggleScreenAttachment => {
+            let _ = app.emit("shortcut://toggle-screen", true);
+        }
+        GlobalAction::ToggleVoiceInput => {
+            let status = state.voice.get_status();
+            if !status.listening && !status.ready {
+                let _ = app.emit("shortcut://voice-unconfigured", status);
+            } else {
+                match state.voice.toggle_listening(app) {
+                    Ok(next) => track_voice_start(state, &next),
+                    Err(err) => {
+                        let _ = app.emit("vosk://error", err);
+                    }
+                }
+            }
+        }
+        GlobalAction::ToggleProtection => {
+            let next = !state.content_protected.load(Ordering::Relaxed);
+            if win_util::set_content_protection(&main_window, next).is_ok() {
+                state.content_protected.store(next, Ordering::Relaxed);
+                let _ = app.emit("shortcut://protection", next);
+            }
+        }
+        GlobalAction::ToggleClickThrough => {
+            let next = !state.click_through.load(Ordering::Relaxed);
+            if main_window.set_ignore_cursor_events(next).is_ok() {
+                state.click_through.store(next, Ordering::Relaxed);
+                let _ = app.emit("shortcut://click-through", next);
+            }
+        }
+        GlobalAction::ResizeReset => {
+            if let Ok(size) = win_util::reset_window_bounds(&main_window) {
+                let _ = app.emit("shortcut://resized", size);
+            }
+        }
+    }
+}
+
 pub fn run() {
     let app_state = Arc::new(AppState::default());
     let state_for_setup = Arc::clone(&app_state);
+    let parsed_shortcuts = parse_global_shortcuts();
+    let handler_shortcuts = parsed_shortcuts.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -302,13 +741,13 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler({
                     let state_for_shortcut = Arc::clone(&app_state);
-                    move |_app, shortcut, event| {
-                        if event.state() == ShortcutState::Pressed {
-                            let key = shortcut.to_string().to_lowercase();
-                            if key.contains("ctrl") && key.contains("alt") && key.contains("s") {
-                                println!("[Undetect] Global shortcut triggered capture");
-                                let _ = capture_primary_screen(&state_for_shortcut);
-                            }
+                    move |app, shortcut, event| {
+                        if event.state() == ShortcutState::Pressed
+                            && let Some((_, action, _)) = handler_shortcuts
+                                .iter()
+                                .find(|(registered, _, _)| registered == shortcut)
+                        {
+                            dispatch_global_action(app, &state_for_shortcut, *action);
                         }
                     }
                 })
@@ -316,21 +755,24 @@ pub fn run() {
         )
         .manage(app_state)
         .setup(move |app| {
-            // Apply initial content protection & register shortcut
+            // Apply initial content protection, always-on-top & register shortcuts
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = win_util::set_content_protection(&main_window, true);
+                let _ = main_window.set_always_on_top(true);
+                let _ = main_window.set_resizable(true);
                 if let Some(icon) = app.default_window_icon() {
                     let _ = main_window.set_icon(icon.clone());
                 }
             }
 
-            // Register global shortcut
-            let shortcut: Result<Shortcut, _> = "ctrl+alt+s".parse();
-            if let Ok(sc) = shortcut {
-                let _ = app.global_shortcut().register(sc);
+            for (sc, _, spec) in &parsed_shortcuts {
+                if let Err(err) = app.global_shortcut().register(*sc) {
+                    eprintln!("[Undetect] Global shortcut {} unavailable: {:?}", spec, err);
+                }
             }
 
-            // Start default server on port 9090 with PIN "1234"
+            // Start HTTP remote viewer using persisted port & PIN
+            let initial_port = state_for_setup.config.read().unwrap().port;
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
             {
                 let mut tx_lock = state_for_setup.shutdown_tx.lock().unwrap();
@@ -338,8 +780,10 @@ pub fn run() {
             }
             let server_state = Arc::clone(&state_for_setup);
             tokio_rt().spawn(async move {
-                server::start_http_server(server_state, 9090, shutdown_rx).await;
+                server::start_http_server(server_state, initial_port, shutdown_rx).await;
             });
+
+            TelemetryService::start_heartbeat_loop(Arc::clone(&state_for_setup));
 
             Ok(())
         })
@@ -351,12 +795,58 @@ pub fn run() {
             clear_session,
             toggle_taskbar,
             toggle_content_protection,
+            toggle_always_on_top,
+            toggle_telemetry,
+            toggle_click_through,
+            set_window_opacity,
             generate_qr,
             minimize_window,
             close_window,
             drag_window,
+            get_window_size,
+            set_window_size,
+            step_resize_window,
+            reset_window_size,
+            nudge_window,
+            toggle_window_visibility,
+            start_resize_drag,
             download_and_install_update,
+            send_llm_chat,
+            send_llm_chat_stream,
+            get_llm_config,
+            set_llm_config,
+            clear_llm_api_key,
+            upload_resume,
+            clear_resume,
+            set_job_description,
+            run_ocr,
+            get_groq_models,
+            get_voice_status,
+            set_voice_config,
+            set_voice_source,
+            clear_voice_api_key,
+            list_voice_devices,
+            setup_vosk,
+            start_voice_input,
+            stop_voice_input,
+            toggle_voice_input,
         ])
         .run(tauri::generate_context!())
         .expect("error while running undetect application");
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn all_global_shortcuts_parse_cleanly() {
+        for &(spec, _) in GLOBAL_SHORTCUTS {
+            assert!(
+                spec.parse::<Shortcut>().is_ok(),
+                "Global shortcut '{}' failed to parse",
+                spec
+            );
+        }
+    }
 }

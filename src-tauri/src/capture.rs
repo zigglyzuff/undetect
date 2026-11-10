@@ -87,7 +87,8 @@ fn capture_screen_gdi() -> Result<image::RgbaImage, String> {
         }
 
         // Windows GDI gives BGRA; swap to RGBA
-        for chunk in raw_bytes.chunks_exact_mut(4) {
+        let (chunks, _) = raw_bytes.as_chunks_mut::<4>();
+        for chunk in chunks {
             let b = chunk[0];
             let r = chunk[2];
             chunk[0] = r;
@@ -100,7 +101,16 @@ fn capture_screen_gdi() -> Result<image::RgbaImage, String> {
     }
 }
 
-pub fn capture_primary_screen(state: &AppState) -> Result<ScreenshotMeta, String> {
+fn encode_jpeg(img: &image::RgbaImage, quality: u8) -> Result<Vec<u8>, String> {
+    let mut buf = Cursor::new(Vec::new());
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+    encoder
+        .encode_image(img)
+        .map_err(|e| format!("JPEG encoding failed: {}", e))?;
+    Ok(buf.into_inner())
+}
+
+fn capture_screen_rgba() -> Result<image::RgbaImage, String> {
     // Attempt capture using xcap first
     let mut captured_img = None;
 
@@ -127,36 +137,44 @@ pub fn capture_primary_screen(state: &AppState) -> Result<ScreenshotMeta, String
         }
     }
 
-    let rgba_img = captured_img.ok_or_else(|| "Failed to capture display image".to_string())?;
+    captured_img.ok_or_else(|| "Failed to capture display image".to_string())
+}
 
+fn capture_resized_image() -> Result<(image::RgbaImage, Vec<u8>), String> {
+    let rgba_img = capture_screen_rgba()?;
     let (w, h) = (rgba_img.width(), rgba_img.height());
     let max_w: u32 = 1920;
 
     let target_img = if w > max_w {
-        let target_h = ((h as f64) * (max_w as f64 / w as f64)).round() as u32;
+        let target_h = ((h as f64) * (max_w as f64 / w as f64)).round().max(1.0) as u32;
         image::imageops::resize(&rgba_img, max_w, target_h, image::imageops::FilterType::Triangle)
     } else {
         rgba_img
     };
 
-    let mut jpeg_buf = Cursor::new(Vec::new());
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 85);
-    encoder
-        .encode_image(&target_img)
-        .map_err(|e| format!("JPEG encoding failed: {}", e))?;
+    let mut jpeg_data = encode_jpeg(&target_img, 85)?;
+    // Keep raw JPEG compact so base64 data URLs stay well under Groq/Gemini limits
+    if jpeg_data.len() > 2_800_000 {
+        jpeg_data = encode_jpeg(&target_img, 65)?;
+    }
 
-    let jpeg_data = jpeg_buf.into_inner();
+    Ok((target_img, jpeg_data))
+}
+
+/// Capture the primary display and return compressed JPEG bytes without altering session screenshots.
+pub fn capture_primary_screen_jpeg() -> Result<Vec<u8>, String> {
+    let (_img, jpeg_data) = capture_resized_image()?;
+    Ok(jpeg_data)
+}
+
+pub fn capture_primary_screen(state: &AppState) -> Result<ScreenshotMeta, String> {
+    let (target_img, jpeg_data) = capture_resized_image()?;
 
     // Generate lightweight thumbnail (width: 160px) for filmstrip reel (~3-5 KB instead of ~500 KB)
     let thumb_w: u32 = 160;
     let thumb_h = ((target_img.height() as f64) * (thumb_w as f64 / target_img.width() as f64)).round().max(1.0) as u32;
     let thumb_img = image::imageops::resize(&target_img, thumb_w, thumb_h, image::imageops::FilterType::Triangle);
-    let mut thumb_buf = Cursor::new(Vec::new());
-    let mut thumb_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut thumb_buf, 65);
-    let thumb_data = match thumb_encoder.encode_image(&thumb_img) {
-        Ok(_) => thumb_buf.into_inner(),
-        Err(_) => Vec::new(),
-    };
+    let thumb_data = encode_jpeg(&thumb_img, 65).unwrap_or_default();
 
     let now = SystemTime::now();
     let epoch_duration = now.duration_since(UNIX_EPOCH).unwrap_or_default();

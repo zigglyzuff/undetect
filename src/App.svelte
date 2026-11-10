@@ -1,16 +1,37 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { InfoCircleOutline } from 'flowbite-svelte-icons';
+  import { listen } from '@tauri-apps/api/event';
+  import { Tabs, TabItem } from 'flowbite-svelte';
+  import { DesktopPcOutline, MessagesOutline } from 'flowbite-svelte-icons';
 
   import TitleBar from './components/TitleBar.svelte';
-  import ServerConfigCard from './components/ServerConfigCard.svelte';
-  import ProtectionCard from './components/ProtectionCard.svelte';
-  import LanAccessCard from './components/LanAccessCard.svelte';
-  import ActionButtons from './components/ActionButtons.svelte';
-  import QrModal from './components/QrModal.svelte';
   import WhatsNewModal from './components/WhatsNewModal.svelte';
   import Toast from './components/Toast.svelte';
+
+  import ChatView from './chat/ChatView.svelte';
+  import RemoteServerView from './components/RemoteServerView.svelte';
+  import SettingsView from './components/SettingsView.svelte';
+
+  let activeTab = 'chat'; // Default view is Chat screen
+  let settingsOpen = false;
+  let settingsSection = 'model';
+  let attachScreenshot = true;
+  let chatViewRef;
+  let settingsViewRef;
+
+  let windowSize = { width: 460, height: 710 };
+
+  const RESIZE_HANDLES = [
+    { dir: 'n', cls: 'top-0 left-2 right-2 h-1 cursor-ns-resize' },
+    { dir: 's', cls: 'bottom-0 left-2 right-2 h-1 cursor-ns-resize' },
+    { dir: 'w', cls: 'left-0 top-2 bottom-2 w-1 cursor-ew-resize' },
+    { dir: 'e', cls: 'right-0 top-2 bottom-2 w-1 cursor-ew-resize' },
+    { dir: 'nw', cls: 'top-0 left-0 w-2 h-2 cursor-nwse-resize' },
+    { dir: 'ne', cls: 'top-0 right-0 w-2 h-2 cursor-nesw-resize' },
+    { dir: 'sw', cls: 'bottom-0 left-0 w-2 h-2 cursor-nesw-resize' },
+    { dir: 'se', cls: 'bottom-0 right-0 w-2 h-2 cursor-nwse-resize' },
+  ];
 
   let status = {
     running: false,
@@ -20,26 +41,29 @@
     screenshot_count: 0,
     skip_taskbar: false,
     content_protected: true,
-    app_version: '2.0.0',
+    always_on_top: true,
+    click_through: false,
+    window_opacity: 100,
+    telemetry_enabled: true,
+    app_version: '2.1.0',
   };
 
-  let qrModalOpen = false;
-  let currentQrData = '';
-  let currentQrTarget = '';
+  let stealthCursor = true;
 
   let whatsNewOpen = false;
 
   function closeWhatsNew() {
     whatsNewOpen = false;
     try {
-      localStorage.setItem('undetect_seen_version', status.app_version || '2.0.0');
+      localStorage.setItem('undetect_seen_version', status.app_version || '2.1.0');
     } catch (e) {}
   }
 
   function checkWhatsNew() {
     try {
+      const currentVersion = status.app_version || '2.1.0';
       const seen = localStorage.getItem('undetect_seen_version');
-      if (seen !== '2.0.0') {
+      if (seen !== currentVersion) {
         whatsNewOpen = true;
       }
     } catch (e) {}
@@ -56,6 +80,90 @@
   };
 
   let refreshInterval = null;
+  let resizePersistTimer = null;
+  let unlistenFns = [];
+
+  function persistWindowSize(size) {
+    if (!size) return;
+    try {
+      localStorage.setItem('undetect_window_size', JSON.stringify(size));
+    } catch (e) {}
+  }
+
+  async function syncWindowSize() {
+    try {
+      const size = await invoke('get_window_size');
+      if (size) windowSize = size;
+    } catch (e) {}
+  }
+
+  async function handleSetWindowSize(width, height) {
+    try {
+      const applied = await invoke('set_window_size', {
+        width: Number(width),
+        height: Number(height),
+      });
+      if (applied) {
+        windowSize = applied;
+        persistWindowSize(applied);
+        showToast(`Window: ${applied.width} × ${applied.height}`);
+      }
+    } catch (e) {
+      showToast('Resize error: ' + e);
+    }
+  }
+
+  async function handleStepResize(dw, dh) {
+    try {
+      const applied = await invoke('step_resize_window', { dw, dh });
+      if (applied) {
+        windowSize = applied;
+        persistWindowSize(applied);
+        showToast(`Window: ${applied.width} × ${applied.height}`);
+      }
+    } catch (e) {
+      showToast('Resize error: ' + e);
+    }
+  }
+
+  async function handleResetWindowSize() {
+    try {
+      const applied = await invoke('reset_window_size');
+      if (applied) {
+        windowSize = applied;
+        persistWindowSize(applied);
+        showToast(`Window reset (${applied.width} × ${applied.height})`);
+      }
+    } catch (e) {
+      showToast('Reset error: ' + e);
+    }
+  }
+
+  async function handleNudgeWindow(dx, dy) {
+    try {
+      await invoke('nudge_window', { dx, dy });
+    } catch (e) {}
+  }
+
+  function handleStartResizeDrag(e, direction) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    invoke('start_resize_drag', { direction }).catch(console.error);
+  }
+
+  function handleWindowResized() {
+    if (resizePersistTimer) clearTimeout(resizePersistTimer);
+    resizePersistTimer = setTimeout(async () => {
+      try {
+        const size = await invoke('get_window_size');
+        if (size) {
+          windowSize = size;
+          persistWindowSize(size);
+        }
+      } catch (e) {}
+    }, 180);
+  }
 
   function showToast(msg) {
     if (toastTimer) clearTimeout(toastTimer);
@@ -81,7 +189,7 @@
     try {
       const res = await invoke('start_server', { port: Number(port), password });
       status = res;
-      showToast('Server Updated & Started!');
+      showToast('Server Started!');
     } catch (e) {
       showToast('Error: ' + e);
     }
@@ -94,27 +202,6 @@
       showToast('Server Stopped');
     } catch (e) {
       showToast('Error: ' + e);
-    }
-  }
-
-  async function handleCapture() {
-    showToast('Capturing screen...');
-    try {
-      const meta = await invoke('capture_now');
-      showToast(`Captured at ${meta.timestamp}`);
-      await refreshStatus();
-    } catch (e) {
-      showToast('Capture error: ' + e);
-    }
-  }
-
-  async function handleClear() {
-    try {
-      await invoke('clear_session');
-      showToast('Session Cleared');
-      await refreshStatus();
-    } catch (e) {
-      showToast('Clear error: ' + e);
     }
   }
 
@@ -138,15 +225,227 @@
     }
   }
 
-  async function handleOpenQr(url) {
-    currentQrTarget = url;
-    currentQrData = '';
-    qrModalOpen = true;
+  async function handleToggleAlwaysOnTop(alwaysOnTop) {
     try {
-      const dataUrl = await invoke('generate_qr', { text: url });
-      currentQrData = dataUrl;
+      const res = await invoke('toggle_always_on_top', { alwaysOnTop });
+      status.always_on_top = res;
+      try {
+        localStorage.setItem('undetect_always_on_top', String(res));
+      } catch (e) {}
+      showToast(res ? 'Pinned Always on Top' : 'Unpinned from Top');
     } catch (e) {
-      showToast('Failed to generate QR: ' + e);
+      showToast('Always on top error: ' + e);
+    }
+  }
+
+  async function handleToggleTelemetry(enabled) {
+    try {
+      const res = await invoke('toggle_telemetry', { enabled });
+      status.telemetry_enabled = res;
+      showToast(res ? 'Anonymous usage stats enabled' : 'Anonymous usage stats disabled');
+    } catch (e) {
+      showToast('Telemetry setting error: ' + e);
+    }
+  }
+
+  async function handleToggleClickThrough(clickThrough) {
+    try {
+      const res = await invoke('toggle_click_through', { clickThrough });
+      status.click_through = res;
+      showToast(res ? 'Ghost Mode ON (Ctrl + Alt + G to interact)' : 'Ghost Mode OFF');
+    } catch (e) {
+      showToast('Ghost mode error: ' + e);
+    }
+  }
+
+  function handleToggleStealthCursor(enabled) {
+    stealthCursor = Boolean(enabled);
+    try {
+      localStorage.setItem('undetect_stealth_cursor', String(stealthCursor));
+    } catch (e) {}
+    showToast(stealthCursor ? 'Neutral Cursor enabled' : 'Standard cursors restored');
+  }
+
+  async function handleSetWindowOpacity(opacity) {
+    const target = Math.max(40, Math.min(100, Math.round(Number(opacity) || 100)));
+    try {
+      const applied = await invoke('set_window_opacity', { opacity: target });
+      status.window_opacity = applied;
+      try {
+        localStorage.setItem('undetect_window_opacity', String(applied));
+      } catch (e) {}
+    } catch (e) {
+      showToast('Opacity error: ' + e);
+    }
+  }
+
+  async function restoreWindowPreferences() {
+    try {
+      const savedOpacity = Number(localStorage.getItem('undetect_window_opacity'));
+      if (!Number.isNaN(savedOpacity) && savedOpacity >= 40 && savedOpacity <= 100) {
+        const applied = await invoke('set_window_opacity', { opacity: Math.round(savedOpacity) });
+        status.window_opacity = applied;
+      }
+
+      const savedTop = localStorage.getItem('undetect_always_on_top');
+      if (savedTop !== null) {
+        const topBool = savedTop !== 'false';
+        const appliedTop = await invoke('toggle_always_on_top', { alwaysOnTop: topBool });
+        status.always_on_top = appliedTop;
+      }
+
+      const savedCursor = localStorage.getItem('undetect_stealth_cursor');
+      if (savedCursor !== null) {
+        stealthCursor = savedCursor !== 'false';
+      }
+
+      const rawSize = localStorage.getItem('undetect_window_size');
+      if (rawSize) {
+        const parsed = JSON.parse(rawSize);
+        if (parsed && Number(parsed.width) >= 360 && Number(parsed.height) >= 480) {
+          const appliedSize = await invoke('set_window_size', {
+            width: Number(parsed.width),
+            height: Number(parsed.height),
+          });
+          if (appliedSize) windowSize = appliedSize;
+        }
+      } else {
+        await syncWindowSize();
+      }
+    } catch (e) {
+      console.warn('Could not restore window preferences:', e);
+    }
+  }
+
+  async function focusChatInputSoon() {
+    await tick();
+    requestAnimationFrame(() => chatViewRef?.focusInput());
+  }
+
+  function scrollActiveFeed(deltaY) {
+    const feeds = document.querySelectorAll('[data-scroll-feed]');
+    for (const el of feeds) {
+      if (el instanceof HTMLElement && el.offsetParent !== null) {
+        el.scrollTop += deltaY;
+        return true;
+      }
+    }
+    if (settingsOpen) {
+      settingsViewRef?.scrollContent(deltaY);
+      return true;
+    }
+    if (activeTab === 'chat') {
+      chatViewRef?.scrollMessages(deltaY);
+      return true;
+    }
+    return false;
+  }
+
+  async function focusChatView() {
+    whatsNewOpen = false;
+    settingsOpen = false;
+    activeTab = 'chat';
+    await focusChatInputSoon();
+  }
+
+  function openSettings(section = 'model') {
+    if (section) settingsSection = section;
+    settingsOpen = true;
+  }
+
+  async function closeSettings() {
+    settingsOpen = false;
+    await chatViewRef?.refreshAvailability?.();
+    if (activeTab === 'chat') {
+      await focusChatInputSoon();
+    }
+  }
+
+  async function handleGlobalKeydown(e) {
+    const active = document.activeElement;
+    const tag = active?.tagName?.toLowerCase();
+    const isEditable = tag === 'input' || tag === 'textarea' || tag === 'select' || active?.isContentEditable;
+    const ctrl = (e.ctrlKey || e.metaKey) && !e.altKey;
+
+    if (e.key === 'Escape') {
+      if (whatsNewOpen) {
+        e.preventDefault();
+        closeWhatsNew();
+      } else if (settingsOpen) {
+        e.preventDefault();
+        await closeSettings();
+      } else if (isEditable) {
+        active?.blur();
+      }
+      return;
+    }
+
+    if (e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        scrollActiveFeed(e.key === 'ArrowUp' ? -150 : 150);
+        return;
+      }
+      if (!settingsOpen && !whatsNewOpen && activeTab === 'chat') {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          chatViewRef?.sendVoiceTranscript?.();
+          return;
+        }
+        if (e.key === 'Backspace' && chatViewRef?.clearVoiceTranscript?.()) {
+          e.preventDefault();
+          return;
+        }
+      }
+    }
+
+    if (!e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'PageUp' || e.key === 'PageDown')) {
+      e.preventDefault();
+      scrollActiveFeed(e.key === 'PageUp' ? -240 : 240);
+      return;
+    }
+
+    // Core focused shortcuts
+    if (ctrl && !e.shiftKey) {
+      if (e.code === 'KeyK') {
+        e.preventDefault();
+        await focusChatView();
+        return;
+      }
+      if (e.code === 'KeyJ' && !settingsOpen && !whatsNewOpen && activeTab === 'chat') {
+        e.preventDefault();
+        await chatViewRef?.openJdModal?.();
+        return;
+      }
+      if (e.key === ',' || e.code === 'Comma') {
+        e.preventDefault();
+        if (settingsOpen) {
+          await closeSettings();
+        } else {
+          openSettings('model');
+        }
+        return;
+      }
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        scrollActiveFeed(e.key === 'ArrowUp' ? -150 : 150);
+        return;
+      }
+      if (e.code === 'BracketLeft') {
+        e.preventDefault();
+        handleStepResize(-60, 0);
+        return;
+      }
+      if (e.code === 'BracketRight') {
+        e.preventDefault();
+        handleStepResize(60, 0);
+        return;
+      }
+      if (e.code === 'Digit0' || e.code === 'Numpad0' || e.key === '0') {
+        e.preventDefault();
+        handleResetWindowSize();
+        return;
+      }
     }
   }
 
@@ -169,11 +468,6 @@
       showToast('Update failed: ' + e);
       isUpdating = false;
     }
-  }
-
-  function handleCopyUrl(url) {
-    navigator.clipboard.writeText(url);
-    showToast('URL Copied to Clipboard!');
   }
 
   async function checkUpdates(manual = false) {
@@ -205,93 +499,179 @@
 
   onMount(async () => {
     await refreshStatus();
+    await restoreWindowPreferences();
     checkWhatsNew();
     checkUpdates(false);
     refreshInterval = setInterval(refreshStatus, 3000);
+
+    if (!whatsNewOpen && !settingsOpen && activeTab === 'chat') {
+      await focusChatInputSoon();
+    }
+
+    document.addEventListener('keydown', handleGlobalKeydown, true);
+
+    try {
+      unlistenFns = await Promise.all([
+        listen('shortcut://visibility', () => {
+          // Intentionally avoid stealing focus when showing/hiding overlay
+        }),
+        listen('shortcut://focus-chat', async () => {
+          await focusChatView();
+        }),
+        listen('shortcut://scroll', ({ payload }) => {
+          scrollActiveFeed(Number(payload) || 0);
+        }),
+        listen('shortcut://toggle-screen', () => {
+          attachScreenshot = !attachScreenshot;
+          showToast(attachScreenshot ? 'Screen capture included' : 'Text-only mode (screen excluded)');
+        }),
+        listen('shortcut://protection', ({ payload }) => {
+          status.content_protected = Boolean(payload);
+          showToast(payload ? 'Window Protected from Screen Capture' : 'Protection Disabled');
+        }),
+        listen('shortcut://click-through', ({ payload }) => {
+          status.click_through = Boolean(payload);
+          showToast(payload ? 'Ghost Mode ON (Ctrl + Alt + G to exit)' : 'Ghost Mode OFF');
+        }),
+        listen('shortcut://answer-screen', async () => {
+          whatsNewOpen = false;
+          settingsOpen = false;
+          activeTab = 'chat';
+          await tick();
+          chatViewRef?.answerScreen?.();
+        }),
+        listen('vosk://error', ({ payload }) => {
+          if (payload) showToast(String(payload));
+        }),
+        listen('shortcut://resized', ({ payload }) => {
+          if (payload) {
+            windowSize = payload;
+            persistWindowSize(payload);
+            showToast(`Window: ${payload.width} × ${payload.height}`);
+          }
+        }),
+      ]);
+    } catch (e) {
+      console.warn('Could not attach global shortcut event listeners:', e);
+    }
   });
 
   onDestroy(() => {
+    document.removeEventListener('keydown', handleGlobalKeydown, true);
     if (refreshInterval) clearInterval(refreshInterval);
+    if (resizePersistTimer) clearTimeout(resizePersistTimer);
+    for (const unlisten of unlistenFns) {
+      if (typeof unlisten === 'function') unlisten();
+    }
   });
 </script>
 
-<main class="w-full h-full bg-[#090a0f] text-zinc-100 flex flex-col overflow-hidden relative select-none">
-  <!-- Draggable Custom Title Bar -->
+<svelte:window onresize={handleWindowResized} />
+
+<main class="fixed inset-0 w-full h-full bg-zinc-950 text-zinc-100 flex flex-col overflow-clip select-none {stealthCursor ? 'stealth-cursor' : ''}">
+  <!-- Frameless Edge & Corner Resize Grips -->
+  {#each RESIZE_HANDLES as handle (handle.dir)}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="fixed z-40 {handle.cls}"
+      onmousedown={(e) => handleStartResizeDrag(e, handle.dir)}
+    ></div>
+  {/each}
+
+  <!-- Draggable Custom Title Bar with Top-Right Settings Cogwheel -->
   <TitleBar
     version={`v${status.app_version}`}
-    onCheckUpdates={() => checkUpdates(true)}
+    settingsOpen={settingsOpen}
+    clickThrough={status.click_through}
+    onToggleSettings={() => (settingsOpen ? closeSettings() : openSettings('model'))}
   />
 
-  <!-- Scrollable App Content Container - Balanced & Full Width -->
-  <div class="flex-1 overflow-y-auto px-4 py-3.5 flex flex-col gap-3 w-full box-border">
-    {#if updateBanner.show}
-      <div class="w-full bg-zinc-900 border border-zinc-700/80 text-zinc-200 p-3 rounded-xl flex items-center justify-between gap-3 text-xs shadow-lg">
-        <div class="flex items-center gap-2">
-          <InfoCircleOutline class="w-4 h-4 text-zinc-300 shrink-0" />
-          <div>
-            <b class="text-white font-semibold">New Release Ready: v{updateBanner.version}</b>
-            <div class="text-[11px] text-zinc-400">Click to automatically download & upgrade.</div>
-          </div>
-        </div>
-        <button
-          type="button"
-          onclick={handleDownloadAndInstallUpdate}
-          disabled={isUpdating}
-          class="font-semibold text-[11px] px-3 py-1.5 rounded-lg bg-white hover:bg-zinc-200 text-zinc-950 transition-colors shadow shrink-0 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-        >
-          {#if isUpdating}
-            <span class="inline-block w-3 h-3 border-2 border-zinc-950 border-t-transparent rounded-full animate-spin"></span>
-            <span>Updating...</span>
-          {:else}
-            <span>Update Now</span>
-          {/if}
-        </button>
-      </div>
-    {/if}
-
-    <!-- Server Configuration Card -->
-    <ServerConfigCard
-      running={status.running}
-      port={status.port}
-      password={status.password}
-      onStart={handleStartServer}
-      onStop={handleStopServer}
-    />
-
-    <!-- Window Protection & Taskbar Card -->
-    <ProtectionCard
-      contentProtected={status.content_protected}
-      skipTaskbar={status.skip_taskbar}
+  {#if settingsOpen}
+    <SettingsView
+      bind:this={settingsViewRef}
+      bind:activeSection={settingsSection}
+      status={status}
+      windowSize={windowSize}
+      stealthCursor={stealthCursor}
+      updateBanner={updateBanner}
+      isUpdating={isUpdating}
+      onClose={closeSettings}
+      onSaveServer={handleStartServer}
       onToggleProtection={handleToggleProtection}
       onToggleTaskbar={handleToggleTaskbar}
+      onToggleAlwaysOnTop={handleToggleAlwaysOnTop}
+      onToggleClickThrough={handleToggleClickThrough}
+      onToggleStealthCursor={handleToggleStealthCursor}
+      onToggleTelemetry={handleToggleTelemetry}
+      onSetWindowOpacity={handleSetWindowOpacity}
+      onSetWindowSize={handleSetWindowSize}
+      onStepResize={handleStepResize}
+      onResetWindowSize={handleResetWindowSize}
+      onCheckUpdates={() => checkUpdates(true)}
+      onDownloadAndInstallUpdate={handleDownloadAndInstallUpdate}
+      showToast={showToast}
     />
+  {/if}
 
-    <!-- Local Wi-Fi Access URLs Card -->
-    <LanAccessCard
-      localUrls={status.local_urls}
-      onOpenQr={handleOpenQr}
-      onCopyUrl={handleCopyUrl}
-    />
+  <!-- Two-Tab Main Interface (Chat First & Default, Remote Server Second) -->
+  <div class={settingsOpen ? 'hidden' : 'flex-1 min-h-0 flex flex-col overflow-clip'}>
+    <Tabs
+      bind:selected={activeTab}
+      tabStyle="none"
+      divider={false}
+      class="px-3.5 pt-2 pb-1.5 bg-zinc-950 border-b border-zinc-800/80 flex items-center gap-1.5 space-x-0 shrink-0 select-none"
+      classes={{ content: 'flex-1 min-h-0 flex flex-col overflow-hidden p-0 mt-0 bg-transparent dark:bg-transparent rounded-none' }}
+    >
+      <TabItem
+        key="chat"
+        open
+        class="flex-1"
+        activeClass="w-full h-8 px-3 rounded-lg text-xs font-bold leading-none flex items-center justify-center gap-2 bg-white text-zinc-950 shadow-md transition-all cursor-pointer focus:outline-none focus-visible:outline-1 focus-visible:outline-white/75"
+        inactiveClass="w-full h-8 px-3 rounded-lg text-xs font-semibold leading-none flex items-center justify-center gap-2 bg-zinc-900/60 hover:bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800 transition-all cursor-pointer focus:outline-none focus-visible:outline-1 focus-visible:outline-white/75"
+      >
+        {#snippet titleSlot()}
+          <MessagesOutline class="w-3.5 h-3.5 shrink-0 block" />
+          <span class="leading-none">Chat</span>
+        {/snippet}
 
-    <!-- Quick Action Buttons -->
-    <ActionButtons
-      count={status.screenshot_count}
-      onCapture={handleCapture}
-      onClear={handleClear}
-    />
+        <ChatView
+          bind:this={chatViewRef}
+          bind:attachScreenshot={attachScreenshot}
+          currentScreenshotId="capture"
+          authPin={status.password}
+          onOpenSettings={openSettings}
+          showToast={showToast}
+        />
+      </TabItem>
+
+      <TabItem
+        key="server"
+        class="flex-1"
+        activeClass="w-full h-8 px-3 rounded-lg text-xs font-bold leading-none flex items-center justify-center gap-2 bg-white text-zinc-950 shadow-md transition-all cursor-pointer focus:outline-none focus-visible:outline-1 focus-visible:outline-white/75"
+        inactiveClass="w-full h-8 px-3 rounded-lg text-xs font-semibold leading-none flex items-center justify-center gap-2 bg-zinc-900/60 hover:bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800 transition-all cursor-pointer focus:outline-none focus-visible:outline-1 focus-visible:outline-white/75"
+      >
+        {#snippet titleSlot()}
+          <DesktopPcOutline class="w-3.5 h-3.5 shrink-0 block" />
+          <span class="leading-none">Remote Server</span>
+        {/snippet}
+
+        <RemoteServerView
+          running={status.running}
+          port={status.port}
+          password={status.password}
+          localUrls={status.local_urls}
+          onStart={handleStartServer}
+          onStop={handleStopServer}
+          onOpenSettings={() => openSettings('server')}
+        />
+      </TabItem>
+    </Tabs>
   </div>
 
-  <!-- QR Scan Modal -->
-  <QrModal
-    isOpen={qrModalOpen}
-    qrDataUrl={currentQrData}
-    targetUrl={currentQrTarget}
-    onClose={() => qrModalOpen = false}
-  />
-
-  <!-- What's New in v2.0 Modal (Shows once on update) -->
+  <!-- What's New Modal (Shows once per release) -->
   <WhatsNewModal
     isOpen={whatsNewOpen}
+    version={`v${status.app_version}`}
     onClose={closeWhatsNew}
   />
 

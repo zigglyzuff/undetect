@@ -71,6 +71,10 @@ pub async fn start_http_server(
         .route("/api/screenshot", get(handle_screenshot))
         .route("/api/capture", post(handle_capture))
         .route("/api/session/clear", post(handle_clear))
+        .route("/api/llm/chat", post(handle_llm_chat))
+        .route("/api/llm/config", get(handle_get_llm_config).post(handle_set_llm_config))
+        .route("/api/llm/ocr", post(handle_llm_ocr))
+        .route("/api/llm/groq-models", get(handle_get_groq_models))
         .route("/api/dev-reload", get(handle_dev_reload))
         .layer(cors)
         .with_state(state.clone());
@@ -119,7 +123,7 @@ fn check_auth(state: &AppState, query: &AuthQuery) -> bool {
     let req_pass = query
         .pass
         .as_deref()
-        .or_else(|| query.pin.as_deref())
+        .or(query.pin.as_deref())
         .unwrap_or("");
     req_pass == cfg.password
 }
@@ -150,12 +154,11 @@ fn get_viewer_mtime() -> u64 {
         "../src/viewer/ViewerApp.svelte",
     ];
     for path in candidates {
-        if let Ok(meta) = std::fs::metadata(path) {
-            if let Ok(mtime) = meta.modified() {
-                if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
-                    return dur.as_millis() as u64;
-                }
-            }
+        if let Ok(meta) = std::fs::metadata(path)
+            && let Ok(mtime) = meta.modified()
+            && let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH)
+        {
+            return dur.as_millis() as u64;
         }
     }
     0
@@ -381,4 +384,125 @@ async fn handle_clear(
         message: Some("Session cleared".to_string()),
     })
     .into_response()
+}
+
+
+async fn handle_llm_chat(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+    Json(payload): Json<crate::llm::ChatRequest>,
+) -> Response {
+    if !check_auth(&state, &query) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "Unauthorized" })),
+        )
+            .into_response();
+    }
+
+    match state.llm.execute_chat(payload, state.clone()).await {
+        Ok(res) => Json(res).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "success": false, "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_get_llm_config(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !check_auth(&state, &query) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "Unauthorized" })),
+        )
+            .into_response();
+    }
+
+    let public_cfg = state.llm.get_public_config();
+    Json(public_cfg).into_response()
+}
+
+async fn handle_set_llm_config(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+    Json(payload): Json<crate::llm::LlmConfig>,
+) -> Response {
+    if !check_auth(&state, &query) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "Unauthorized" })),
+        )
+            .into_response();
+    }
+
+    // Preserve keys and resume seamlessly via shared LlmService config updater
+    match state.llm.apply_config_update(payload) {
+        Ok(public_cfg) => {
+            Json(serde_json::json!({ "success": true, "config": public_cfg })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "success": false, "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_llm_ocr(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+    Json(payload): Json<crate::llm::OcrRequest>,
+) -> Response {
+    if !check_auth(&state, &query) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "Unauthorized" })),
+        )
+            .into_response();
+    }
+
+    match state.llm.extract_ocr_from_state(payload.screenshot_id.as_deref(), &state) {
+        Ok(text) => Json(crate::llm::OcrResponse {
+            success: true,
+            text,
+            error: None,
+        })
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(crate::llm::OcrResponse {
+                success: false,
+                text: "".to_string(),
+                error: Some(e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+
+async fn handle_get_groq_models(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !check_auth(&state, &query) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "Unauthorized" })),
+        )
+            .into_response();
+    }
+
+    match state.llm.fetch_groq_models(None).await {
+        Ok(models) => Json(serde_json::json!({ "success": true, "models": models })).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "success": false, "error": e })),
+        )
+            .into_response(),
+    }
 }

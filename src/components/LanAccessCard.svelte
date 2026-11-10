@@ -1,4 +1,5 @@
 <script>
+  import { Badge, Button, Card } from 'flowbite-svelte';
   import { QrCodeOutline, FileCopyOutline, InfoCircleOutline } from 'flowbite-svelte-icons';
 
   export let localUrls = [];
@@ -6,13 +7,17 @@
   export let onCopyUrl = (url) => {};
 </script>
 
-<div class="w-full bg-zinc-900/60 border border-white/10 rounded-xl p-4 flex flex-col gap-3 shadow-xl backdrop-blur-md">
+<Card
+  size="xl"
+  color="gray"
+  class="w-full bg-zinc-900/60 dark:bg-zinc-900/60 border border-zinc-800 dark:border-zinc-800 rounded-xl p-4 flex flex-col gap-3 shadow-xl"
+>
   <div class="text-sm font-semibold text-zinc-100 flex items-center justify-between">
     <span>Local Wi-Fi Access URLs</span>
     {#if localUrls && localUrls.length > 0}
-      <span class="text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700">
+      <Badge color="gray" class="bg-zinc-800 dark:bg-zinc-800 text-zinc-300 dark:text-zinc-300 border border-zinc-700 dark:border-zinc-700 text-[10px] font-mono font-medium">
         {localUrls.length} online
-      </span>
+      </Badge>
     {/if}
   </div>
 
@@ -20,26 +25,28 @@
     {#if localUrls && localUrls.length > 0}
       {#each localUrls as url}
         <div class="flex items-center justify-between gap-2 bg-black/50 border border-zinc-800/80 rounded-lg p-2 font-mono text-[11px]">
-          <span class="text-emerald-400 break-all select-all flex-1">{url}</span>
+          <span class="text-zinc-200 font-mono font-medium break-all select-all flex-1">{url}</span>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
+            <Button
+              color="alternative"
+              size="xs"
               onclick={() => onOpenQr(url)}
-              class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-[10px] font-medium flex items-center gap-1 cursor-pointer transition-colors active:scale-95"
+              class="px-2 py-1 rounded bg-zinc-800 dark:bg-zinc-800 hover:bg-zinc-700 dark:hover:bg-zinc-700 border-zinc-700 dark:border-zinc-700 text-zinc-300 dark:text-zinc-300 text-[10px] font-medium flex items-center gap-1 cursor-pointer focus:ring-0"
               title="View QR Code"
             >
               <QrCodeOutline class="w-3 h-3 text-zinc-400" />
               <span>QR</span>
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              color="alternative"
+              size="xs"
               onclick={() => onCopyUrl(url)}
-              class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-[10px] font-medium flex items-center gap-1 cursor-pointer transition-colors active:scale-95"
+              class="px-2 py-1 rounded bg-zinc-800 dark:bg-zinc-800 hover:bg-zinc-700 dark:hover:bg-zinc-700 border-zinc-700 dark:border-zinc-700 text-zinc-300 dark:text-zinc-300 text-[10px] font-medium flex items-center gap-1 cursor-pointer focus:ring-0"
               title="Copy to Clipboard"
             >
               <FileCopyOutline class="w-3 h-3 text-zinc-400" />
               <span>Copy</span>
-            </button>
+            </Button>
           </div>
         </div>
       {/each}
@@ -52,4 +59,4 @@
     <InfoCircleOutline class="w-3.5 h-3.5 text-zinc-400 shrink-0" />
     <span>Shortcut: <b class="text-zinc-200 font-semibold">Ctrl+Alt+S</b> captures primary display silently.</span>
   </div>
-</div>
+</Card>
