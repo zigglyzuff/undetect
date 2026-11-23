@@ -21,20 +21,27 @@ pub trait TranscriptSink: Send + Sync {
 pub struct TauriTranscriptSink {
     app: AppHandle,
     stop_flag: Arc<AtomicBool>,
+    auto_stop: bool,
 }
 
 impl TauriTranscriptSink {
-    pub fn new(app: AppHandle, stop_flag: Arc<AtomicBool>) -> Self {
-        Self { app, stop_flag }
+    pub fn new(app: AppHandle, stop_flag: Arc<AtomicBool>, auto_stop: bool) -> Self {
+        Self {
+            app,
+            stop_flag,
+            auto_stop,
+        }
     }
 }
 
 impl TranscriptSink for TauriTranscriptSink {
     fn emit_transcript(&self, event: TranscriptEvent) {
-        let should_stop_after_transcript =
-            event.kind == "final" && event.speech_final && !event.text.trim().is_empty();
+        let should_stop = self.auto_stop
+            && event.kind == "final"
+            && event.speech_final
+            && !event.text.trim().is_empty();
         let _ = self.app.emit("vosk://transcript", event);
-        if should_stop_after_transcript {
+        if should_stop {
             self.stop_flag.store(true, Ordering::SeqCst);
         }
     }
