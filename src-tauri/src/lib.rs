@@ -19,7 +19,7 @@ use tokio::runtime::Runtime;
 
 use crate::capture::capture_primary_screen;
 use crate::state::{AppState, ScreenshotMeta};
-use crate::telemetry::TelemetryService;
+use crate::telemetry::{classify_llm_error, TelemetryService};
 
 pub fn tokio_rt() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
@@ -208,6 +208,14 @@ async fn toggle_taskbar(
         .set_skip_taskbar(hide)
         .map_err(|e| format!("Failed to set skip taskbar: {}", e))?;
     state.skip_taskbar.store(hide, Ordering::Relaxed);
+    TelemetryService::spawn_capture(
+        &state,
+        "stealth_mode_toggled",
+        Some(serde_json::json!({
+            "setting": "skip_taskbar",
+            "value": hide,
+        })),
+    );
     Ok(hide)
 }
 
@@ -219,6 +227,14 @@ async fn toggle_content_protection(
 ) -> Result<bool, String> {
     win_util::set_content_protection(&window, protect)?;
     state.content_protected.store(protect, Ordering::Relaxed);
+    TelemetryService::spawn_capture(
+        &state,
+        "stealth_mode_toggled",
+        Some(serde_json::json!({
+            "setting": "content_protection",
+            "value": protect,
+        })),
+    );
     Ok(protect)
 }
 
@@ -232,6 +248,14 @@ async fn toggle_always_on_top(
         .set_always_on_top(always_on_top)
         .map_err(|e| format!("Failed to set always on top: {}", e))?;
     state.always_on_top.store(always_on_top, Ordering::Relaxed);
+    TelemetryService::spawn_capture(
+        &state,
+        "stealth_mode_toggled",
+        Some(serde_json::json!({
+            "setting": "always_on_top",
+            "value": always_on_top,
+        })),
+    );
     Ok(always_on_top)
 }
 
@@ -248,6 +272,34 @@ async fn toggle_telemetry(
 }
 
 #[tauri::command]
+async fn report_client_error(
+    state: tauri::State<'_, Arc<AppState>>,
+    error_type: String,
+    message: String,
+    source: Option<String>,
+    lineno: Option<u32>,
+    colno: Option<u32>,
+    stack: Option<String>,
+) -> Result<bool, String> {
+    let payload = crate::telemetry::ClientErrorPayload {
+        error_type,
+        message,
+        source,
+        lineno,
+        colno,
+        stack,
+    };
+    Ok(state.telemetry.record_client_error(&state, payload))
+}
+
+#[tauri::command]
+fn get_telemetry_diagnostics(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::telemetry::TelemetryDiagnosticsDto, String> {
+    Ok(state.telemetry.get_diagnostics(&state))
+}
+
+#[tauri::command]
 async fn toggle_click_through(
     window: WebviewWindow,
     state: tauri::State<'_, Arc<AppState>>,
@@ -257,6 +309,14 @@ async fn toggle_click_through(
         .set_ignore_cursor_events(click_through)
         .map_err(|e| format!("Failed to update click-through mode: {e}"))?;
     state.click_through.store(click_through, Ordering::Relaxed);
+    TelemetryService::spawn_capture(
+        &state,
+        "stealth_mode_toggled",
+        Some(serde_json::json!({
+            "setting": "click_through",
+            "value": click_through,
+        })),
+    );
     Ok(click_through)
 }
 
@@ -268,6 +328,14 @@ async fn set_window_opacity(
 ) -> Result<u8, String> {
     let clamped = win_util::set_window_opacity(&window, opacity)?;
     state.window_opacity.store(clamped, Ordering::Relaxed);
+    TelemetryService::spawn_capture(
+        &state,
+        "stealth_mode_toggled",
+        Some(serde_json::json!({
+            "setting": "window_opacity",
+            "value": clamped,
+        })),
+    );
     Ok(clamped)
 }
 
@@ -290,9 +358,20 @@ fn confirm_ui_boot() -> Result<(), String> {
 #[tauri::command]
 async fn check_and_stage_ui_patch(
     app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<ui_patch::UiPatchSyncResult, String> {
     let ver = app.package_info().version.to_string();
-    ui_patch::sync_ui_patch(&ver).await
+    let res = ui_patch::sync_ui_patch(&ver).await?;
+    TelemetryService::spawn_capture(
+        &state,
+        "ui_patch_checked",
+        Some(serde_json::json!({
+            "staged": res.staged,
+            "active_ui_version": res.active_ui_version,
+            "pending_ui_version": res.pending_ui_version,
+        })),
+    );
+    Ok(res)
 }
 
 #[tauri::command]
@@ -373,13 +452,41 @@ fn start_resize_drag(window: WebviewWindow, direction: String) -> Result<(), Str
     win_util::start_resize_drag(&window, &direction)
 }
 
-fn track_chat_sent(state: &Arc<AppState>, res: &crate::llm::ChatResponse, had_screenshot: bool) {
+fn track_chat_sent(
+    state: &Arc<AppState>,
+    res: &crate::llm::ChatResponse,
+    had_screenshot: bool,
+    duration_ms: u64,
+) {
+    let words = res.reply.split_whitespace().count();
+    let word_bucket = match words {
+        0..=20 => "0-20",
+        21..=100 => "21-100",
+        101..=500 => "101-500",
+        _ => "500+",
+    };
     TelemetryService::spawn_capture(
         state,
         "chat_message_sent",
         Some(serde_json::json!({
             "provider": res.provider,
             "model": res.model,
+            "with_screen": had_screenshot,
+            "duration_ms": duration_ms,
+            "response_words_bucket": word_bucket,
+        })),
+    );
+}
+
+fn track_chat_error(state: &Arc<AppState>, err_msg: &str, had_screenshot: bool) {
+    let category = classify_llm_error(err_msg);
+    let provider = state.llm.get_public_config().active_provider;
+    TelemetryService::spawn_capture(
+        state,
+        "chat_error",
+        Some(serde_json::json!({
+            "provider": provider,
+            "error_category": category,
             "with_screen": had_screenshot,
         })),
     );
@@ -390,10 +497,18 @@ async fn send_llm_chat(
     state: tauri::State<'_, Arc<AppState>>,
     request: crate::llm::ChatRequest,
 ) -> Result<crate::llm::ChatResponse, String> {
+    let start = std::time::Instant::now();
     let had_screenshot = request.screenshot_id.is_some();
-    let res = state.llm.execute_chat(request, (*state).clone()).await?;
-    track_chat_sent(&state, &res, had_screenshot);
-    Ok(res)
+    match state.llm.execute_chat(request, (*state).clone()).await {
+        Ok(res) => {
+            track_chat_sent(&state, &res, had_screenshot, start.elapsed().as_millis() as u64);
+            Ok(res)
+        }
+        Err(err) => {
+            track_chat_error(&state, &err, had_screenshot);
+            Err(err)
+        }
+    }
 }
 
 #[tauri::command]
@@ -403,13 +518,22 @@ async fn send_llm_chat_stream(
     request: crate::llm::ChatRequest,
     stream_id: String,
 ) -> Result<crate::llm::ChatResponse, String> {
+    let start = std::time::Instant::now();
     let had_screenshot = request.screenshot_id.is_some();
-    let res = state
+    match state
         .llm
         .execute_chat_stream(request, (*state).clone(), stream_id, app)
-        .await?;
-    track_chat_sent(&state, &res, had_screenshot);
-    Ok(res)
+        .await
+    {
+        Ok(res) => {
+            track_chat_sent(&state, &res, had_screenshot, start.elapsed().as_millis() as u64);
+            Ok(res)
+        }
+        Err(err) => {
+            track_chat_error(&state, &err, had_screenshot);
+            Err(err)
+        }
+    }
 }
 
 #[tauri::command]
@@ -464,17 +588,51 @@ fn run_ocr(
     state: tauri::State<'_, Arc<AppState>>,
     screenshot_id: Option<String>,
 ) -> Result<crate::llm::OcrResponse, String> {
+    let start = std::time::Instant::now();
     match state.llm.extract_ocr_from_state(screenshot_id.as_deref(), &state) {
-        Ok(text) => Ok(crate::llm::OcrResponse {
-            success: true,
-            text,
-            error: None,
-        }),
-        Err(e) => Ok(crate::llm::OcrResponse {
-            success: false,
-            text: "".to_string(),
-            error: Some(e),
-        }),
+        Ok(text) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            let words = text.split_whitespace().count();
+            let bucket = match words {
+                0 => "0",
+                1..=50 => "1-50",
+                51..=200 => "51-200",
+                _ => "200+",
+            };
+            TelemetryService::spawn_capture(
+                &state,
+                "ocr_executed",
+                Some(serde_json::json!({
+                    "success": true,
+                    "duration_ms": duration_ms,
+                    "word_count_bucket": bucket,
+                    "ocr_engine": "windows_media_ocr",
+                })),
+            );
+            Ok(crate::llm::OcrResponse {
+                success: true,
+                text,
+                error: None,
+            })
+        }
+        Err(e) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            TelemetryService::spawn_capture(
+                &state,
+                "ocr_executed",
+                Some(serde_json::json!({
+                    "success": false,
+                    "duration_ms": duration_ms,
+                    "word_count_bucket": "0",
+                    "ocr_engine": "windows_media_ocr",
+                })),
+            );
+            Ok(crate::llm::OcrResponse {
+                success: false,
+                text: "".to_string(),
+                error: Some(e),
+            })
+        }
     }
 }
 
@@ -534,6 +692,7 @@ async fn setup_vosk(
 
 fn track_voice_start(state: &Arc<AppState>, status: &crate::voice::VoiceStatus) {
     if status.listening {
+        state.telemetry.record_voice_started();
         TelemetryService::spawn_capture(
             state,
             "voice_listening_started",
@@ -543,6 +702,19 @@ fn track_voice_start(state: &Arc<AppState>, status: &crate::voice::VoiceStatus) 
             })),
         );
     }
+}
+
+fn track_voice_stop(state: &Arc<AppState>, status: &crate::voice::VoiceStatus) {
+    let duration_secs = state.telemetry.record_voice_stopped();
+    TelemetryService::spawn_capture(
+        state,
+        "voice_listening_stopped",
+        Some(serde_json::json!({
+            "provider": status.provider,
+            "source": status.source,
+            "duration_secs": duration_secs,
+        })),
+    );
 }
 
 #[tauri::command]
@@ -560,7 +732,9 @@ fn stop_voice_input(
     app: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<crate::voice::VoiceStatus, String> {
-    Ok(state.voice.stop_listening(&app))
+    let status = state.voice.stop_listening(&app);
+    track_voice_stop(&state, &status);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -569,7 +743,11 @@ fn toggle_voice_input(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<crate::voice::VoiceStatus, String> {
     let status = state.voice.toggle_listening(&app)?;
-    track_voice_start(&state, &status);
+    if status.listening {
+        track_voice_start(&state, &status);
+    } else {
+        track_voice_stop(&state, &status);
+    }
     Ok(status)
 }
 
@@ -694,6 +872,7 @@ fn dispatch_global_action(app: &AppHandle, state: &Arc<AppState>, action: Global
 }
 
 pub fn run() {
+    telemetry::install_panic_hook();
     let mut ctx = tauri::generate_context!();
     let app_version = ctx.package_info().version.to_string();
     let active_patch = ui_patch::resolve_startup_patch(&app_version);
@@ -795,6 +974,8 @@ pub fn run() {
             toggle_content_protection,
             toggle_always_on_top,
             toggle_telemetry,
+            report_client_error,
+            get_telemetry_diagnostics,
             toggle_click_through,
             set_window_opacity,
             generate_qr,

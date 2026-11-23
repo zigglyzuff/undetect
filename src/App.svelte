@@ -528,7 +528,52 @@
     }
   }
 
+  function setupClientErrorReporting() {
+    const handleWindowError = (event) => {
+      try {
+        const message = String(event?.message || event?.error?.message || event || 'Unknown JS Error');
+        const source = event?.filename || '';
+        const lineno = event?.lineno || 0;
+        const colno = event?.colno || 0;
+        const stack = event?.error?.stack || '';
+        invoke('report_client_error', {
+          errorType: 'uncaught_error',
+          message,
+          source,
+          lineno,
+          colno,
+          stack,
+        }).catch(() => {});
+      } catch (e) {}
+    };
+
+    const handleUnhandledRejection = (event) => {
+      try {
+        const reason = event?.reason;
+        const message = typeof reason === 'string' ? reason : (reason?.message || 'Unhandled Promise Rejection');
+        const stack = reason?.stack || '';
+        invoke('report_client_error', {
+          errorType: 'unhandled_rejection',
+          message,
+          source: '',
+          lineno: 0,
+          colno: 0,
+          stack,
+        }).catch(() => {});
+      } catch (e) {}
+    };
+
+    window.addEventListener('error', handleWindowError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', handleWindowError);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
+  }
+
   onMount(async () => {
+    const teardownErrorReporting = setupClientErrorReporting();
+    unlistenFns.push(teardownErrorReporting);
     invoke('confirm_ui_boot').catch(() => {});
     await refreshStatus();
     await restoreWindowPreferences();
