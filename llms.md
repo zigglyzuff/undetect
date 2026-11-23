@@ -250,14 +250,19 @@ Work system-wide even when another window is focused:
 
 ## [SEC-10] PostHog Telemetry & In-App Updater
 
-### Telemetry (`src-tauri/src/telemetry.rs`)
+### Telemetry & Privacy-Preserving Crash Reporting (`src-tauri/src/telemetry.rs`)
 - **Target**: PostHog US Cloud capture API `https://us.i.posthog.com/i/v0/e/` (5s HTTP timeout, async fire-and-forget via `tokio_rt()`, build-time override via `UNDETECT_POSTHOG_API_KEY`).
 - **Identity**: Salted SHA-256 of Windows `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`:
-  - Production (`!cfg!(debug_assertions)`): `ud_<32-hex>`, `env = "prod"`.
-  - Development (`cfg!(debug_assertions)`): `ud_dev_<32-hex>`, `env = "dev"`.
-- **Events**: `app_opened` (+2s after launch), `app_heartbeat` (every 10m), `chat_message_sent` (`provider`, `model`, `with_screen`), `voice_listening_started` (`provider`, `source`), `remote_server_started`.
-- **Person Props (`$set`)**: `app_version`, `ui_version` (when hot-patched), `os`, `arch`, `last_env`, `llm_provider`, `voice_provider`, `has_resume`, `has_jd`, `remote_server_running`. Zero PII, keys, prompts, resumes, JDs, or screenshots ever leave the machine.
-- **Opt-Out**: `Usage Stats` toggle in Settings -> Window persists `telemetry_config.json`.
+  - Production (`!cfg!(debug_assertions)`): `ud_<16-hex>`, `env = "prod"`.
+  - Development (`cfg!(debug_assertions)`): `ud_dev_<16-hex>`, `env = "dev"`.
+- **System Diagnostics ($set & event properties)**: Windows OS build/display version, physical memory bucket (`<4GB`, `4-7GB`, `8-15GB`, `16-31GB`, `32-63GB`, `64GB+`), CPU core count, monitor count, and primary display resolution.
+- **Crash & Error Reporting**:
+  - **Rust Panic Hook**: `std::panic::set_hook` captures location, payload message, and sanitized backtrace. Persists to `%LOCALAPPDATA%\Undetect\pending_crash.json` and `last_crash.json`. Dispatched on next boot or immediate fire-and-forget.
+  - **Frontend Webview Errors**: Global `window.onerror` and `unhandledrejection` handlers invoke `report_client_error` (rate-limited to 5/session), sanitized through `PrivacySanitizer`.
+  - **UI Hot-Patch Rollback**: Repeated boot crashes trigger rollback and write crash reports.
+- **Privacy Sanitizer**: `PrivacySanitizer` automatically scrubs usernames (`C:\Users\<user>`), API keys (`gsk_...`, `sk-...`, `phc_...`, `Bearer ...`), external IP addresses, and email addresses from all telemetry payloads. Never sends prompts, responses, OCR text, resumes, JDs, or screenshots.
+- **Operational Events**: `app_opened`, `app_heartbeat`, `app_crashed`, `chat_message_sent` (with latency and word bucket), `chat_error` (sanitized category), `voice_listening_started`, `voice_listening_stopped` (with session duration), `ocr_executed` (with latency and word bucket), `stealth_mode_toggled`, `ui_patch_checked`, `remote_server_started`.
+- **Opt-Out & Transparency**: Settings toggle strictly halts all remote telemetry and crash dispatch; "Copy Diagnostics JSON" button lets users inspect the exact anonymous diagnostic payload.
 
 ### Hybrid Auto-Updater (`src/App.svelte`, `src-tauri/src/ui_patch.rs`, `src-tauri/src/lib.rs`)
 - **Binary Track (`tauri-plugin-updater` + `tauri-plugin-process`)**: Queries `https://github.com/zigglyzuff/undetect/releases/latest/download/latest.json` (Ed25519 minisign verified via `pubkey` in `tauri.conf.json`), installs passive NSIS updates on click, and relaunches automatically.

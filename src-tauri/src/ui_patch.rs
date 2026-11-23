@@ -260,6 +260,11 @@ pub fn resolve_startup_patch_in(root: &Path, current_app_version: &str) -> Optio
                 "[Undetect] Rolling back UI patch {} after {} unconfirmed boot(s).",
                 active.ui_version, active.boot_attempts
             );
+            crate::telemetry::record_ui_patch_rollback(
+                &active.ui_version,
+                active.boot_attempts,
+                current_app_version,
+            );
             state.active = None;
             prune_unused_bundles(root, None, state.pending.as_ref());
             let _ = save_patch_state(root, &state);
