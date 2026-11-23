@@ -1,4 +1,4 @@
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use std::sync::mpsc;
 
@@ -208,12 +208,74 @@ where
         .map_err(|e| format!("Failed to start audio stream: {}", e))
 }
 
+fn build_silent_keepalive_stream(
+    device: &cpal::Device,
+    stream_cfg: cpal::StreamConfig,
+    sample_format: cpal::SampleFormat,
+) -> Option<cpal::Stream> {
+    let res = match sample_format {
+        cpal::SampleFormat::F32 => device.build_output_stream(
+            stream_cfg,
+            |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                data.fill(0.0);
+            },
+            |err| {
+                eprintln!("[Undetect Voice] Keepalive stream warning: {}", err);
+            },
+            None,
+        ),
+        cpal::SampleFormat::I16 => device.build_output_stream(
+            stream_cfg,
+            |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                data.fill(0);
+            },
+            |err| {
+                eprintln!("[Undetect Voice] Keepalive stream warning: {}", err);
+            },
+            None,
+        ),
+        cpal::SampleFormat::U16 => device.build_output_stream(
+            stream_cfg,
+            |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+                data.fill(32768);
+            },
+            |err| {
+                eprintln!("[Undetect Voice] Keepalive stream warning: {}", err);
+            },
+            None,
+        ),
+        _ => return None,
+    };
+
+    match res {
+        Ok(stream) => {
+            if let Err(e) = stream.play() {
+                eprintln!("[Undetect Voice] Failed to start keepalive stream: {}", e);
+                None
+            } else {
+                Some(stream)
+            }
+        }
+        Err(e) => {
+            eprintln!("[Undetect Voice] Could not build keepalive stream: {}", e);
+            None
+        }
+    }
+}
+
+pub struct RawAudioStream {
+    pub stream: cpal::Stream,
+    pub keepalive: Option<cpal::Stream>,
+    pub channels: usize,
+    pub sample_rate: u32,
+}
+
 pub fn open_raw_input_stream(
     source: &str,
     device_name: Option<&str>,
     tx: mpsc::Sender<Vec<f32>>,
     err_tx: mpsc::Sender<String>,
-) -> Result<(cpal::Stream, usize, u32), String> {
+) -> Result<RawAudioStream, String> {
     let (device, supported_cfg) = find_device(source, device_name)?;
     let sample_format = supported_cfg.sample_format();
     let src_rate = supported_cfg.sample_rate();
@@ -222,18 +284,18 @@ pub fn open_raw_input_stream(
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => {
-            build_typed_stream::<f32, _>(&device, stream_cfg, tx, err_tx, |s| s)?
+            build_typed_stream::<f32, _>(&device, stream_cfg.clone(), tx, err_tx, |s| s)?
         }
         cpal::SampleFormat::I16 => build_typed_stream::<i16, _>(
             &device,
-            stream_cfg,
+            stream_cfg.clone(),
             tx,
             err_tx,
             |s| (s as f32) / 32768.0,
         )?,
         cpal::SampleFormat::U16 => build_typed_stream::<u16, _>(
             &device,
-            stream_cfg,
+            stream_cfg.clone(),
             tx,
             err_tx,
             |s| ((s as f32) - 32768.0) / 32768.0,
@@ -241,7 +303,18 @@ pub fn open_raw_input_stream(
         other => return Err(format!("Unsupported audio sample format: {:?}", other)),
     };
 
-    Ok((stream, channels, src_rate))
+    let keepalive = if source == "system" {
+        build_silent_keepalive_stream(&device, stream_cfg, sample_format)
+    } else {
+        None
+    };
+
+    Ok(RawAudioStream {
+        stream,
+        keepalive,
+        channels,
+        sample_rate: src_rate,
+    })
 }
 
 #[cfg(test)]

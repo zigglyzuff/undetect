@@ -185,7 +185,7 @@ impl VoiceService {
                 let (raw_tx, raw_rx) = mpsc::channel::<Vec<f32>>();
                 let (err_tx, err_rx) = mpsc::channel::<String>();
 
-                let (stream, channels, src_rate) = match audio::open_raw_input_stream(
+                let raw_audio = match audio::open_raw_input_stream(
                     &audio_source,
                     audio_device.as_deref(),
                     raw_tx,
@@ -197,6 +197,11 @@ impl VoiceService {
                         return;
                     }
                 };
+
+                let channels = raw_audio.channels;
+                let src_rate = raw_audio.sample_rate;
+                let stream = raw_audio.stream;
+                let _keepalive = raw_audio.keepalive;
 
                 if let Err(e) = stream.play() {
                     let _ = audio_ready_tx.send(Err(format!("Failed to start audio capture: {}", e)));
@@ -221,12 +226,21 @@ impl VoiceService {
                                 break;
                             }
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if audio_source == "system" {
+                                let silence = vec![0i16; 960];
+                                if pcm16k_tx.send(silence).is_err() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
 
                 drop(stream);
+                drop(_keepalive);
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
@@ -234,8 +248,9 @@ impl VoiceService {
         let provider_listening = Arc::clone(&self.listening);
         let provider_app = app.clone();
         let provider_cfg = cfg.clone();
+        let auto_stop = cfg.auto_send && cfg.source != "system";
         let sink: Arc<dyn TranscriptSink> =
-            Arc::new(TauriTranscriptSink::new(app.clone(), Arc::clone(&stop_flag)));
+            Arc::new(TauriTranscriptSink::new(app.clone(), Arc::clone(&stop_flag), auto_stop));
 
         let provider_handle = std::thread::Builder::new()
             .name("undetect-speech-provider".to_string())

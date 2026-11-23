@@ -184,22 +184,45 @@ impl SpeechProvider for DeepgramSpeechProvider {
             let _ = ready_tx.send(Ok(()));
 
             let (mut ws_write, mut ws_read) = ws_stream.split();
-            let (async_tx, mut async_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+            let (async_tx, mut async_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
             let pump_stop = Arc::clone(&stop_flag);
 
-            // Bridge blocking `std::sync::mpsc` audio frames onto Tokio async channel
+            // Bridge blocking `std::sync::mpsc` audio frames onto Tokio async channel,
+            // batching samples into ~100ms (1600 samples = 3200 bytes) optimal chunks
+            // to avoid flooding the WebSocket with hundreds of tiny packets per second.
             let bridge_handle = tokio::task::spawn_blocking(move || {
+                let mut chunk_buf = Vec::with_capacity(3200);
                 while !pump_stop.load(Ordering::Relaxed) {
                     match pcm16k_rx.recv_timeout(Duration::from_millis(60)) {
                         Ok(samples) => {
-                            if !samples.is_empty()
-                                && async_tx.blocking_send(samples_to_le_bytes(&samples)).is_err()
-                            {
-                                break;
+                            if !samples.is_empty() {
+                                chunk_buf.extend_from_slice(&samples);
+                                if chunk_buf.len() >= 1600 {
+                                    let bytes = samples_to_le_bytes(&chunk_buf);
+                                    chunk_buf.clear();
+                                    if async_tx.blocking_send(bytes).is_err() {
+                                        break;
+                                    }
+                                }
                             }
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if !chunk_buf.is_empty() {
+                                let bytes = samples_to_le_bytes(&chunk_buf);
+                                chunk_buf.clear();
+                                if async_tx.blocking_send(bytes).is_err() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            if !chunk_buf.is_empty() {
+                                let bytes = samples_to_le_bytes(&chunk_buf);
+                                let _ = async_tx.blocking_send(bytes);
+                            }
+                            break;
+                        }
                     }
                 }
             });
@@ -208,6 +231,7 @@ impl SpeechProvider for DeepgramSpeechProvider {
             let recv_stop = Arc::clone(&stop_flag);
             let stop_notify = Arc::new(tokio::sync::Notify::new());
             let stop_notify_recv = Arc::clone(&stop_notify);
+            let auto_stop = cfg.auto_send && cfg.source != "system";
             let recv_task = tokio::spawn(async move {
                 let mut had_spoken_text = false;
                 while let Some(item) = ws_read.next().await {
@@ -220,7 +244,7 @@ impl SpeechProvider for DeepgramSpeechProvider {
                                     sink_for_recv.emit_transcript(ev);
                                 }
                                 Ok(None) => {
-                                    if had_spoken_text && is_deepgram_utterance_end(raw) {
+                                    if auto_stop && had_spoken_text && is_deepgram_utterance_end(raw) {
                                         recv_stop.store(true, Ordering::SeqCst);
                                     }
                                 }
@@ -236,7 +260,24 @@ impl SpeechProvider for DeepgramSpeechProvider {
                                 break;
                             }
                         }
-                        Ok(Message::Close(_)) => break,
+                        Ok(Message::Close(maybe_frame)) => {
+                            if let Some(frame) = maybe_frame {
+                                let code_num = u16::from(frame.code);
+                                eprintln!(
+                                    "[Undetect Voice] Deepgram closed connection: code={}, reason={}",
+                                    code_num, frame.reason
+                                );
+                                if code_num != 1000 {
+                                    sink_for_recv.emit_error(format!(
+                                        "Deepgram closed: {} ({})",
+                                        frame.reason, code_num
+                                    ));
+                                }
+                            }
+                            recv_stop.store(true, Ordering::SeqCst);
+                            stop_notify_recv.notify_one();
+                            break;
+                        }
                         Ok(_) => {}
                         Err(e) => {
                             if !recv_stop.load(Ordering::Relaxed) {
@@ -266,12 +307,14 @@ impl SpeechProvider for DeepgramSpeechProvider {
                     maybe_bytes = async_rx.recv() => {
                         match maybe_bytes {
                             Some(bytes) => {
-                                if let Err(e) = ws_write.send(Message::Binary(bytes.into())).await {
-                                    sink.emit_error(format!("Deepgram send error: {}", e));
-                                    stop_flag.store(true, Ordering::Relaxed);
-                                    break;
+                                if !bytes.is_empty() {
+                                    if let Err(e) = ws_write.send(Message::Binary(bytes.into())).await {
+                                        sink.emit_error(format!("Deepgram send error: {}", e));
+                                        stop_flag.store(true, Ordering::Relaxed);
+                                        break;
+                                    }
+                                    last_audio_sent = Instant::now();
                                 }
-                                last_audio_sent = Instant::now();
                             }
                             None => break,
                         }
@@ -287,13 +330,19 @@ impl SpeechProvider for DeepgramSpeechProvider {
                 }
             }
 
+            // Drop async_rx and ensure stop_flag is set so bridge_handle never blocks or deadlocks
+            drop(async_rx);
+            stop_flag.store(true, Ordering::Relaxed);
+
             // Signal Deepgram to flush buffered transcripts cleanly before shutting down
-            let _ = ws_write
-                .send(Message::Text(r#"{"type":"CloseStream"}"#.into()))
-                .await;
-            let _ = ws_write.flush().await;
-            let _ = tokio::time::timeout(Duration::from_millis(650), recv_task).await;
-            let _ = bridge_handle.await;
+            let _ = tokio::time::timeout(
+                Duration::from_millis(400),
+                ws_write.send(Message::Text(r#"{"type":"CloseStream"}"#.into())),
+            )
+            .await;
+            let _ = tokio::time::timeout(Duration::from_millis(200), ws_write.flush()).await;
+            let _ = tokio::time::timeout(Duration::from_millis(400), recv_task).await;
+            let _ = tokio::time::timeout(Duration::from_millis(400), bridge_handle).await;
             Ok(())
         })
     }
