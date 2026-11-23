@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'ui-v*'
+    branches:
+      - 'ui/**'
   workflow_dispatch:
     inputs:
       ui_version:

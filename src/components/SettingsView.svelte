@@ -569,62 +569,22 @@
           />
         </div>
 
-        <div class="w-full flex flex-col gap-2.5 p-3.5 bg-zinc-950/75 border border-zinc-800/80 rounded-xl">
-          <div class="flex items-center justify-between gap-3">
-            <div class="min-w-0">
-              <div class="text-[12.5px] font-medium text-zinc-100">Telemetry & Crash Reports</div>
-              <div class="text-[11px] text-zinc-400 leading-snug mt-0.5">
-                Send anonymous performance metrics, diagnostics, and crash reports. Prompts, screen text, resumes, and API keys are strictly excluded.
-              </div>
+        <div class="w-full flex items-center justify-between gap-3 p-3.5 bg-zinc-950/75 border border-zinc-800/80 rounded-xl">
+          <div class="min-w-0">
+            <div class="text-[12.5px] font-medium text-zinc-100">Telemetry &amp; Crash Reports</div>
+            <div class="text-[11px] text-zinc-400 leading-snug mt-0.5">
+              Send anonymous performance metrics and crash reports. Prompts, screen text, resumes, and API keys are strictly excluded.
             </div>
-            <Toggle
-              color="gray"
-              size="small"
-              class="relative cursor-pointer shrink-0"
-              bind:checked={telemetryEnabled}
-              onchange={(e) => handleTelemetryChange(e.currentTarget.checked)}
-              classes={monoToggleClasses}
-              aria-label="Share anonymous usage stats and crash reports"
-            />
           </div>
-
-          {#if diagnostics}
-            <div class="pt-2 border-t border-zinc-800/60 flex flex-col gap-1.5 text-[11px] font-mono text-zinc-400">
-              <div class="flex items-center justify-between">
-                <span>Anonymous ID:</span>
-                <span class="text-zinc-300 select-all">{diagnostics.distinct_id}</span>
-              </div>
-              <div class="flex items-center justify-between">
-                <span>System:</span>
-                <span class="text-zinc-300">{diagnostics.system.os_name} {diagnostics.system.arch} ({diagnostics.system.memory_bucket}, {diagnostics.system.cpu_cores} cores)</span>
-              </div>
-              <div class="flex items-center justify-between">
-                <span>Resolution:</span>
-                <span class="text-zinc-300">{diagnostics.system.primary_resolution} ({diagnostics.system.monitor_count} monitor{diagnostics.system.monitor_count > 1 ? 's' : ''})</span>
-              </div>
-              <div class="flex items-center justify-between">
-                <span>Last Crash:</span>
-                <span class="text-zinc-300">
-                  {diagnostics.last_crash ? `${diagnostics.last_crash.crash_type} (${diagnostics.last_crash.sent ? 'sent' : 'local'})` : 'None recorded'}
-                </span>
-              </div>
-              <div class="pt-1.5 flex justify-end">
-                <Button
-                  size="xs"
-                  color="alternative"
-                  class="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700 text-[10.5px] py-1 px-2.5 h-auto rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
-                  onclick={copyDiagnostics}
-                >
-                  {#if diagnosticsCopied}
-                    <CheckOutline class="w-3 h-3 text-emerald-400" />
-                    <span>Copied!</span>
-                  {:else}
-                    <span>Copy Diagnostics JSON</span>
-                  {/if}
-                </Button>
-              </div>
-            </div>
-          {/if}
+          <Toggle
+            color="gray"
+            size="small"
+            class="relative cursor-pointer shrink-0"
+            bind:checked={telemetryEnabled}
+            onchange={(e) => handleTelemetryChange(e.currentTarget.checked)}
+            classes={monoToggleClasses}
+            aria-label="Share anonymous usage stats and crash reports"
+          />
         </div>
       </Card>
     </div>
