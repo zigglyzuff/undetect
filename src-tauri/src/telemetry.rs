@@ -28,6 +28,7 @@ impl Default for TelemetryConfig {
 #[derive(Debug, Clone)]
 pub struct TelemetrySnapshot {
     pub app_version: String,
+    pub ui_version: Option<String>,
     pub os: &'static str,
     pub arch: &'static str,
     pub env: &'static str,
@@ -154,9 +155,15 @@ impl TelemetryService {
         let llm = state.llm.get_public_config();
         let voice = state.voice.get_status();
         let remote_server_running = state.config.read().map(|c| c.running).unwrap_or(false);
+        let ui_version = state
+            .active_ui_patch
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().map(|p| p.ui_version.clone()));
 
         TelemetrySnapshot {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
+            ui_version,
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
             env: if cfg!(debug_assertions) { "dev" } else { "prod" },
@@ -177,6 +184,9 @@ impl TelemetryService {
     ) -> serde_json::Value {
         let mut person_set = serde_json::Map::new();
         person_set.insert("app_version".to_string(), serde_json::json!(snapshot.app_version));
+        if let Some(ui_ver) = &snapshot.ui_version {
+            person_set.insert("ui_version".to_string(), serde_json::json!(ui_ver));
+        }
         person_set.insert("os".to_string(), serde_json::json!(snapshot.os));
         person_set.insert("arch".to_string(), serde_json::json!(snapshot.arch));
         person_set.insert("last_env".to_string(), serde_json::json!(snapshot.env));
@@ -191,6 +201,9 @@ impl TelemetryService {
 
         let mut properties = serde_json::Map::new();
         properties.insert("app_version".to_string(), serde_json::json!(snapshot.app_version));
+        if let Some(ui_ver) = &snapshot.ui_version {
+            properties.insert("ui_version".to_string(), serde_json::json!(ui_ver));
+        }
         properties.insert("os".to_string(), serde_json::json!(snapshot.os));
         properties.insert("arch".to_string(), serde_json::json!(snapshot.arch));
         properties.insert("env".to_string(), serde_json::json!(snapshot.env));
@@ -341,7 +354,8 @@ mod tests {
     #[test]
     fn builds_posthog_payload_without_sensitive_fields_and_with_person_set() {
         let snapshot = TelemetrySnapshot {
-            app_version: "2.1.0".to_string(),
+            app_version: "2.2.0".to_string(),
+            ui_version: Some("2.2.0-ui.1".to_string()),
             os: "windows",
             arch: "x86_64",
             env: "prod",
@@ -371,7 +385,8 @@ mod tests {
         assert_eq!(payload["properties"]["voice_provider"], "deepgram");
         assert_eq!(payload["properties"]["model"], "openai/gpt-oss-120b");
         assert_eq!(payload["properties"]["with_screen"], true);
-        assert_eq!(payload["properties"]["$set"]["app_version"], "2.1.0");
+        assert_eq!(payload["properties"]["$set"]["app_version"], "2.2.0");
+        assert_eq!(payload["properties"]["$set"]["ui_version"], "2.2.0-ui.1");
         assert_eq!(payload["properties"]["$set"]["has_resume"], true);
     }
 

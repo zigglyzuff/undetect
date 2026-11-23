@@ -1,0 +1,81 @@
+name: UI Hot-Patch Release
+
+on:
+  push:
+    tags:
+      - 'ui-v*'
+  workflow_dispatch:
+    inputs:
+      ui_version:
+        description: 'UI patch version (defaults to <pkg>-ui.<timestamp> or tag name)'
+        required: false
+        type: string
+      min_app_version:
+        description: 'Minimum compatible binary app_version (defaults to package.json version)'
+        required: false
+        type: string
+      max_app_version:
+        description: 'Maximum compatible binary app_version (defaults to package.json version)'
+        required: false
+        type: string
+
+jobs:
+  publish-ui-patch:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend dist bundle
+        run: npm run build
+
+      - name: Package and sign UI patch manifest
+        env:
+          UI_PATCH_SIGNING_PRIVATE_KEY: ${{ secrets.UI_PATCH_SIGNING_PRIVATE_KEY }}
+        run: |
+          UI_VER="${{ github.event.inputs.ui_version }}"
+          if [ -z "$UI_VER" ] && [[ "${{ github.ref }}" == refs/tags/ui-v* ]]; then
+            UI_VER="${GITHUB_REF_NAME#ui-v}"
+          fi
+          ARGS=()
+          if [ -n "$UI_VER" ]; then
+            ARGS+=(--ui-version "$UI_VER")
+          fi
+          if [ -n "${{ github.event.inputs.min_app_version }}" ]; then
+            ARGS+=(--min-app "${{ github.event.inputs.min_app_version }}")
+          fi
+          if [ -n "${{ github.event.inputs.max_app_version }}" ]; then
+            ARGS+=(--max-app "${{ github.event.inputs.max_app_version }}")
+          fi
+          node scripts/build-ui-patch.mjs "${ARGS[@]}"
+
+      - name: Upload dist.zip and ui-manifest.json to rolling ui-latest pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # MUST stay prerelease=true so GitHub /releases/latest continues resolving binary releases.
+          if gh release view ui-latest >/dev/null 2>&1; then
+            gh release upload ui-latest \
+              release_build/ui-patch/dist.zip \
+              release_build/ui-patch/ui-manifest.json \
+              --clobber
+            gh release edit ui-latest --prerelease --notes "Rolling signed UI-only hot-patch assets."
+          else
+            gh release create ui-latest \
+              release_build/ui-patch/dist.zip \
+              release_build/ui-patch/ui-manifest.json \
+              --prerelease \
+              --title "Undetect UI Hot-Patches (Rolling)" \
+              --notes "Rolling signed UI-only hot-patch assets."
+          fi

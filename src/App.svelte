@@ -2,6 +2,8 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { check } from '@tauri-apps/plugin-updater';
+  import { relaunch } from '@tauri-apps/plugin-process';
   import { Tabs, TabItem } from 'flowbite-svelte';
   import { DesktopPcOutline, MessagesOutline } from 'flowbite-svelte-icons';
 
@@ -45,25 +47,34 @@
     click_through: false,
     window_opacity: 100,
     telemetry_enabled: true,
-    app_version: '2.1.0',
+    app_version: '2.2.0',
+    ui_version: null,
   };
 
   let stealthCursor = true;
 
   let whatsNewOpen = false;
 
+  function majorMinorKey(ver) {
+    const raw = String(ver || '').trim();
+    if (!raw) return '';
+    const clean = raw.replace(/^v/, '').split('-')[0];
+    const parts = clean.split('.');
+    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : clean;
+  }
+
   function closeWhatsNew() {
     whatsNewOpen = false;
     try {
-      localStorage.setItem('undetect_seen_version', status.app_version || '2.1.0');
+      localStorage.setItem('undetect_seen_version', majorMinorKey(status.app_version || '2.2.0'));
     } catch (e) {}
   }
 
   function checkWhatsNew() {
     try {
-      const currentVersion = status.app_version || '2.1.0';
+      const currentSeries = majorMinorKey(status.app_version || '2.2.0');
       const seen = localStorage.getItem('undetect_seen_version');
-      if (seen !== currentVersion) {
+      if (majorMinorKey(seen) !== currentSeries) {
         whatsNewOpen = true;
       }
     } catch (e) {}
@@ -73,10 +84,10 @@
   let toastVisible = false;
   let toastTimer = null;
 
+  let pendingBinaryUpdate = null;
   let updateBanner = {
     show: false,
     version: '',
-    downloadUrl: '',
   };
 
   let refreshInterval = null;
@@ -452,17 +463,18 @@
   let isUpdating = false;
 
   async function handleDownloadAndInstallUpdate() {
-    if (!updateBanner.downloadUrl) {
-      showToast('No update package URL found');
+    if (!pendingBinaryUpdate) {
+      showToast('No update package available');
       return;
     }
 
     if (isUpdating) return;
     isUpdating = true;
-    showToast('Downloading update package...');
+    showToast('Downloading and verifying update...');
 
     try {
-      await invoke('download_and_install_update', { downloadUrl: updateBanner.downloadUrl });
+      await pendingBinaryUpdate.downloadAndInstall();
+      await relaunch();
     } catch (e) {
       console.error('Update failed:', e);
       showToast('Update failed: ' + e);
@@ -470,34 +482,54 @@
     }
   }
 
-  async function checkUpdates(manual = false) {
-    if (manual) showToast('Checking GitHub for updates...');
+  async function checkUiPatch(manual = false) {
     try {
-      const res = await fetch('https://api.github.com/repos/zigglyzuff/undetect/releases/latest');
-      if (res.ok) {
-        const release = await res.json();
-        const latestTag = release.tag_name ? release.tag_name.replace(/^v/, '') : '';
-        if (latestTag && latestTag !== status.app_version) {
-          const exeAsset = release.assets
-            ? (release.assets.find(a => a.name.toLowerCase().includes('setup') && a.name.endsWith('.exe'))
-               || release.assets.find(a => a.name.endsWith('.exe')))
-            : null;
-          updateBanner = {
-            show: true,
-            version: latestTag,
-            downloadUrl: exeAsset ? exeAsset.browser_download_url : release.html_url,
-          };
-          showToast(`New Version v${latestTag} Available!`);
-          return;
-        }
+      const res = await invoke('check_and_stage_ui_patch');
+      if (res?.staged && manual) {
+        showToast(`UI patch ${res.pending_ui_version} staged — applies on restart`);
+        return true;
       }
-      if (manual) showToast(`Latest version (v${status.app_version}) is installed`);
+      if (res?.pending_ui_version && manual) {
+        showToast(`UI patch ${res.pending_ui_version} already staged — restart to apply`);
+        return true;
+      }
     } catch (e) {
-      if (manual) showToast('Update check failed');
+      console.warn('UI patch check skipped:', e);
+    }
+    return false;
+  }
+
+  async function checkUpdates(manual = false) {
+    if (manual) showToast('Checking for updates...');
+    try {
+      const update = await check();
+      if (update?.available) {
+        pendingBinaryUpdate = update;
+        updateBanner = {
+          show: true,
+          version: update.version,
+        };
+        showToast(`New Version v${update.version} Available!`);
+        return;
+      }
+      pendingBinaryUpdate = null;
+      updateBanner = { show: false, version: '' };
+
+      const stagedUi = await checkUiPatch(manual);
+      if (manual && !stagedUi) {
+        showToast(`Latest version (v${status.app_version}) is installed`);
+      }
+    } catch (e) {
+      console.warn('Binary update check failed:', e);
+      const stagedUi = await checkUiPatch(manual);
+      if (manual && !stagedUi) {
+        showToast(`Latest version (v${status.app_version}) is installed`);
+      }
     }
   }
 
   onMount(async () => {
+    invoke('confirm_ui_boot').catch(() => {});
     await refreshStatus();
     await restoreWindowPreferences();
     checkWhatsNew();
@@ -581,6 +613,7 @@
   <!-- Draggable Custom Title Bar with Top-Right Settings Cogwheel -->
   <TitleBar
     version={`v${status.app_version}`}
+    uiVersion={status.ui_version}
     settingsOpen={settingsOpen}
     clickThrough={status.click_through}
     onToggleSettings={() => (settingsOpen ? closeSettings() : openSettings('model'))}

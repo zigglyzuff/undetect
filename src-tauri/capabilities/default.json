@@ -17,6 +17,8 @@
     "core:window:allow-set-focus",
     "core:window:allow-center",
     "global-shortcut:default",
-    "opener:default"
+    "opener:default",
+    "updater:default",
+    "process:default"
   ]
 }
