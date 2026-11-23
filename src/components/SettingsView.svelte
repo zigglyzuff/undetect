@@ -47,13 +47,13 @@
     click_through: false,
     window_opacity: 100,
     telemetry_enabled: true,
-    app_version: '2.1.0',
+    app_version: '2.2.0',
+    ui_version: null,
   };
 
   export let updateBanner = {
     show: false,
     version: '',
-    downloadUrl: '',
   };
   export let isUpdating = false;
 
@@ -262,7 +262,7 @@
         color="alternative"
         size="xs"
         onclick={onCheckUpdates}
-        title="Check for updates (v{status.app_version})"
+        title="Check for updates (v{status.app_version}{status.ui_version ? ` • ${status.ui_version}` : ''})"
         class="h-7 px-2.5 py-0 rounded-lg bg-zinc-900 dark:bg-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-800 border-zinc-800 dark:border-zinc-800 text-zinc-300 dark:text-zinc-300 hover:text-white dark:hover:text-white text-[11px] font-sans font-medium inline-flex items-center gap-1.5 leading-none cursor-pointer focus:ring-0 focus-within:ring-0 dark:focus-within:ring-0"
       >
         <RefreshOutline class="w-3 h-3 shrink-0" />

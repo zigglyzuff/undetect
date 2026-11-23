@@ -88,6 +88,7 @@ pub struct AppState {
     pub llm: Arc<crate::llm::LlmService>,
     pub voice: Arc<crate::voice::VoiceService>,
     pub telemetry: Arc<crate::telemetry::TelemetryService>,
+    pub active_ui_patch: RwLock<Option<crate::ui_patch::ActiveUiPatch>>,
 }
 
 impl Default for AppState {
@@ -109,6 +110,7 @@ impl Default for AppState {
             llm: Arc::new(crate::llm::LlmService::new()),
             voice: Arc::new(crate::voice::VoiceService::new()),
             telemetry: Arc::new(crate::telemetry::TelemetryService::new()),
+            active_ui_patch: RwLock::new(None),
         }
     }
 }

@@ -4,6 +4,7 @@ mod ocr;
 mod server;
 mod state;
 pub mod telemetry;
+pub mod ui_patch;
 pub mod voice;
 mod win_util;
 
@@ -44,6 +45,7 @@ pub struct StatusResponse {
     pub window_opacity: u8,
     pub telemetry_enabled: bool,
     pub app_version: String,
+    pub ui_version: Option<String>,
 }
 
 fn get_local_urls(port: u16, pass: &str) -> Vec<String> {
@@ -86,6 +88,11 @@ fn build_status(state: &AppState, app_version: &str) -> StatusResponse {
         Vec::new()
     };
     let count = state.screenshots.read().map(|l| l.len()).unwrap_or(0);
+    let ui_version = state
+        .active_ui_patch
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.ui_version.clone()));
 
     StatusResponse {
         running: cfg.running,
@@ -100,6 +107,7 @@ fn build_status(state: &AppState, app_version: &str) -> StatusResponse {
         window_opacity: state.window_opacity.load(Ordering::Relaxed),
         telemetry_enabled: state.telemetry.is_enabled(),
         app_version: app_version.to_string(),
+        ui_version,
     }
 }
 
@@ -275,60 +283,16 @@ fn generate_qr(text: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn download_and_install_update(
+fn confirm_ui_boot() -> Result<(), String> {
+    ui_patch::confirm_ui_boot()
+}
+
+#[tauri::command]
+async fn check_and_stage_ui_patch(
     app: AppHandle,
-    download_url: String,
-) -> Result<(), String> {
-    if download_url.is_empty() {
-        return Err("Download URL is empty".to_string());
-    }
-
-    let client = reqwest::Client::builder()
-        .user_agent("Undetect-App")
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-    let response = client
-        .get(&download_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to connect to download URL: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("Download failed with status: {}", response.status()));
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to download update file: {}", e))?;
-
-    let temp_dir = std::env::temp_dir();
-    let installer_path = temp_dir.join("Undetect-Update-Setup.exe");
-
-    std::fs::write(&installer_path, &bytes)
-        .map_err(|e| format!("Failed to write installer to disk: {}", e))?;
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        std::process::Command::new(&installer_path)
-            .creation_flags(DETACHED_PROCESS)
-            .spawn()
-            .map_err(|e| format!("Failed to launch installer: {}", e))?;
-    }
-
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new(&installer_path)
-            .spawn()
-            .map_err(|e| format!("Failed to launch installer: {}", e))?;
-    }
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    app.exit(0);
-    Ok(())
+) -> Result<ui_patch::UiPatchSyncResult, String> {
+    let ver = app.package_info().version.to_string();
+    ui_patch::sync_ui_patch(&ver).await
 }
 
 #[tauri::command]
@@ -730,7 +694,35 @@ fn dispatch_global_action(app: &AppHandle, state: &Arc<AppState>, action: Global
 }
 
 pub fn run() {
+    let mut ctx = tauri::generate_context!();
+    let app_version = ctx.package_info().version.to_string();
+    let active_patch = ui_patch::resolve_startup_patch(&app_version);
+
+    if let Some(patch_dir) = active_patch.as_ref().map(|p| p.bundle_dir.clone()) {
+        struct EmptyAssets;
+        impl<R: tauri::Runtime> tauri::Assets<R> for EmptyAssets {
+            fn get(&self, _: &tauri::utils::assets::AssetKey) -> Option<std::borrow::Cow<'_, [u8]>> {
+                None
+            }
+            fn iter(&self) -> Box<tauri::utils::assets::AssetsIter<'_>> {
+                Box::new(std::iter::empty())
+            }
+            fn csp_hashes(
+                &self,
+                _: &tauri::utils::assets::AssetKey,
+            ) -> Box<dyn Iterator<Item = tauri::utils::assets::CspHash<'_>> + '_> {
+                Box::new(std::iter::empty())
+            }
+        }
+        let fallback = ctx.set_assets(Box::new(EmptyAssets));
+        ctx.set_assets(Box::new(ui_patch::HotSwapAssets::new(patch_dir, fallback)));
+    }
+
     let app_state = Arc::new(AppState::default());
+    if let Ok(mut guard) = app_state.active_ui_patch.write() {
+        *guard = active_patch;
+    }
+
     let state_for_setup = Arc::clone(&app_state);
     let parsed_shortcuts = parse_global_shortcuts();
     let handler_shortcuts = parsed_shortcuts.clone();
@@ -755,6 +747,12 @@ pub fn run() {
         )
         .manage(app_state)
         .setup(move |app| {
+            #[cfg(desktop)]
+            {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
+            }
+
             // Apply initial content protection, always-on-top & register shortcuts
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = win_util::set_content_protection(&main_window, true);
@@ -810,7 +808,8 @@ pub fn run() {
             nudge_window,
             toggle_window_visibility,
             start_resize_drag,
-            download_and_install_update,
+            confirm_ui_boot,
+            check_and_stage_ui_patch,
             send_llm_chat,
             send_llm_chat_stream,
             get_llm_config,
@@ -831,7 +830,7 @@ pub fn run() {
             stop_voice_input,
             toggle_voice_input,
         ])
-        .run(tauri::generate_context!())
+        .run(ctx)
         .expect("error while running undetect application");
 }
 

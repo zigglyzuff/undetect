@@ -128,16 +128,56 @@ fn check_auth(state: &AppState, query: &AuthQuery) -> bool {
     req_pass == cfg.password
 }
 
-fn get_viewer_html() -> String {
-    let candidates = [
-        "dist/viewer.html",
-        "../dist/viewer.html",
-        "../../dist/viewer.html",
-    ];
-    for path in candidates {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            return content;
+fn active_ui_bundle_dir(state: &AppState) -> Option<std::path::PathBuf> {
+    state
+        .active_ui_patch
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.bundle_dir.clone()))
+}
+
+fn mime_for_asset(path: &str) -> &'static str {
+    if path.ends_with(".js") {
+        "application/javascript"
+    } else if path.ends_with(".css") {
+        "text/css"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".ico") {
+        "image/x-icon"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+fn build_asset_response(bytes: Vec<u8>, mime: &'static str) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn get_viewer_html(state: &AppState) -> String {
+    if cfg!(debug_assertions) {
+        let candidates = [
+            "dist/viewer.html",
+            "../dist/viewer.html",
+            "../../dist/viewer.html",
+        ];
+        for path in candidates {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                return content;
+            }
         }
+    }
+    if let Some(bundle_dir) = active_ui_bundle_dir(state)
+        && let Ok(content) = std::fs::read_to_string(bundle_dir.join("viewer.html"))
+    {
+        return content;
     }
     if let Some(file) = EmbeddedDist::get("viewer.html") {
         return String::from_utf8_lossy(&file.data).to_string();
@@ -164,66 +204,43 @@ fn get_viewer_mtime() -> u64 {
     0
 }
 
-async fn handle_index() -> Response {
-    Html(get_viewer_html()).into_response()
+async fn handle_index(State(state): State<Arc<AppState>>) -> Response {
+    Html(get_viewer_html(&state)).into_response()
 }
 
-async fn handle_asset(Path(path): Path<String>) -> Response {
-    let clean_path = path.trim_start_matches('/').replace("..", "");
-    let candidates = [
-        format!("dist/assets/{}", clean_path),
-        format!("../dist/assets/{}", clean_path),
-        format!("../../dist/assets/{}", clean_path),
-    ];
+async fn handle_asset(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+) -> Response {
+    let Some(rel_path) = crate::ui_patch::sanitize_asset_rel_path(&path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let clean_path = rel_path.to_string_lossy().replace('\\', "/");
+    let mime = mime_for_asset(&clean_path);
 
-    for c in candidates {
-        if let Ok(bytes) = std::fs::read(&c) {
-            let mime = if c.ends_with(".js") {
-                "application/javascript"
-            } else if c.ends_with(".css") {
-                "text/css"
-            } else if c.ends_with(".png") {
-                "image/png"
-            } else if c.ends_with(".svg") {
-                "image/svg+xml"
-            } else if c.ends_with(".ico") {
-                "image/x-icon"
-            } else {
-                "application/octet-stream"
-            };
-
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, mime)
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
-                .body(Body::from(bytes))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    if cfg!(debug_assertions) {
+        let candidates = [
+            format!("dist/assets/{clean_path}"),
+            format!("../dist/assets/{clean_path}"),
+            format!("../../dist/assets/{clean_path}"),
+        ];
+        for c in candidates {
+            if let Ok(bytes) = std::fs::read(&c) {
+                return build_asset_response(bytes, mime);
+            }
         }
     }
 
-    // Embedded assets fallback for standalone binary (outside of dev environment)
-    let embedded_path = format!("assets/{}", clean_path);
-    if let Some(file) = EmbeddedDist::get(&embedded_path) {
-        let mime = if clean_path.ends_with(".js") {
-            "application/javascript"
-        } else if clean_path.ends_with(".css") {
-            "text/css"
-        } else if clean_path.ends_with(".png") {
-            "image/png"
-        } else if clean_path.ends_with(".svg") {
-            "image/svg+xml"
-        } else if clean_path.ends_with(".ico") {
-            "image/x-icon"
-        } else {
-            "application/octet-stream"
-        };
+    if let Some(bundle_dir) = active_ui_bundle_dir(&state)
+        && let Ok(bytes) = std::fs::read(bundle_dir.join("assets").join(&rel_path))
+    {
+        return build_asset_response(bytes, mime);
+    }
 
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, mime)
-            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
-            .body(Body::from(file.data))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    // Embedded assets fallback for standalone binary (outside of dev environment)
+    let embedded_path = format!("assets/{clean_path}");
+    if let Some(file) = EmbeddedDist::get(&embedded_path) {
+        return build_asset_response(file.data.into_owned(), mime);
     }
 
     StatusCode::NOT_FOUND.into_response()

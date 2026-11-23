@@ -4,7 +4,8 @@
   import { CloseOutline, CogOutline } from 'flowbite-svelte-icons';
   import logo from '../assets/logo.png';
 
-  export let version = 'v2.1.0';
+  export let version = 'v2.2.0';
+  export let uiVersion = null;
   export let settingsOpen = false;
   export let clickThrough = false;
   export let onToggleSettings = () => {};
@@ -24,7 +25,7 @@
   <div data-tauri-drag-region class="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 text-xs font-bold tracking-wide text-zinc-100 pointer-events-none select-none">
     <img src={logo} alt="Undetect Logo" class="w-4 h-4 object-contain" />
     <span class="tracking-wider uppercase font-sans font-bold text-[11px]">Undetect</span>
-    <Badge color="gray" class="text-[10px] font-sans font-medium tabular-nums px-2 py-0.5 leading-none rounded-full bg-zinc-800 dark:bg-zinc-800 text-zinc-300 dark:text-zinc-300 border border-zinc-700/70 dark:border-zinc-700/70">
+    <Badge color="gray" title={uiVersion ? `UI patch: ${uiVersion}` : version} class="text-[10px] font-sans font-medium tabular-nums px-2 py-0.5 leading-none rounded-full bg-zinc-800 dark:bg-zinc-800 text-zinc-300 dark:text-zinc-300 border border-zinc-700/70 dark:border-zinc-700/70">
       {version}
     </Badge>
     {#if clickThrough}
