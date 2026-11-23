@@ -30,7 +30,7 @@
           {version}
         </Badge>
       </div>
-      <p class="text-[11px] text-zinc-400 mt-0.5">Hybrid Updates, AI Chat &amp; Live Voice</p>
+      <p class="text-[11px] text-zinc-400 mt-0.5">AI Copilot, Live Voice &amp; Seamless Updates</p>
     </div>
   </div>
 
@@ -41,8 +41,8 @@
         <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
       </div>
       <div class="flex flex-col">
-        <span class="text-xs font-semibold text-zinc-200">Seamless Hybrid Updates</span>
-        <span class="text-[11px] text-zinc-400 leading-snug">Signed automatic releases plus background UI patches applied on launch.</span>
+        <span class="text-xs font-semibold text-zinc-200">Automatic Updates</span>
+        <span class="text-[11px] text-zinc-400 leading-snug">Stay up to date effortlessly with silent bug fixes and one-click app updates.</span>
       </div>
     </div>
 
@@ -51,8 +51,8 @@
         <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
       </div>
       <div class="flex flex-col">
-        <span class="text-xs font-semibold text-zinc-200">AI Interview Chat</span>
-        <span class="text-[11px] text-zinc-400 leading-snug">Screen-aware chat with local OCR, Groq &amp; Gemini models.</span>
+        <span class="text-xs font-semibold text-zinc-200">AI Screen Copilot</span>
+        <span class="text-[11px] text-zinc-400 leading-snug">Instant screen-aware answers using fast OCR, Groq, and Gemini AI models.</span>
       </div>
     </div>
 
@@ -62,7 +62,7 @@
       </div>
       <div class="flex flex-col">
         <span class="text-xs font-semibold text-zinc-200">Live Voice Transcription</span>
-        <span class="text-[11px] text-zinc-400 leading-snug">Real-time Deepgram or offline Vosk capture for mic &amp; system audio.</span>
+        <span class="text-[11px] text-zinc-400 leading-snug">High-accuracy live captions for meeting audio and microphone speech.</span>
       </div>
     </div>
 
@@ -71,8 +71,8 @@
         <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
       </div>
       <div class="flex flex-col">
-        <span class="text-xs font-semibold text-zinc-200">Resume &amp; JD Context</span>
-        <span class="text-[11px] text-zinc-400 leading-snug">Upload your resume in Settings and add a job description in Chat.</span>
+        <span class="text-xs font-semibold text-zinc-200">Resume &amp; Job Context</span>
+        <span class="text-[11px] text-zinc-400 leading-snug">Upload your resume and paste job descriptions for tailored interview guidance.</span>
       </div>
     </div>
   </div>
